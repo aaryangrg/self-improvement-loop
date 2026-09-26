@@ -8,25 +8,21 @@ from pathlib import Path
 
 import pandas as pd
 import pdfplumber
-from markitdown import MarkItDown
 
 
 def parse_docx(path: Path) -> str:
-    try:
-        return MarkItDown().convert(str(path)).text_content
-    except Exception:
-        from docx import Document
+    from docx import Document
 
-        document = Document(path)
-        parts: list[str] = []
-        for paragraph in document.paragraphs:
-            if paragraph.text:
-                parts.append(paragraph.text)
-        for table in document.tables:
-            for row in table.rows:
-                parts.append("\t".join(cell.text for cell in row.cells))
-            parts.append("")
-        return "\n".join(parts)
+    document = Document(path)
+    parts: list[str] = []
+    for paragraph in document.paragraphs:
+        if paragraph.text:
+            parts.append(paragraph.text)
+    for table in document.tables:
+        for row in table.rows:
+            parts.append("\t".join(cell.text for cell in row.cells))
+        parts.append("")
+    return "\n".join(parts)
 
 
 def parse_pdf(path: Path) -> str:
@@ -44,7 +40,17 @@ def parse_pdf(path: Path) -> str:
 
 
 def parse_pptx(path: Path) -> str:
-    return MarkItDown().convert(str(path)).text_content
+    from pptx import Presentation
+
+    presentation = Presentation(path)
+    parts: list[str] = []
+    for slide_index, slide in enumerate(presentation.slides, start=1):
+        parts.append(f"=== Slide {slide_index} ===")
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text:
+                parts.append(shape.text)
+        parts.append("")
+    return "\n".join(parts)
 
 
 def parse_xlsx(path: Path) -> str:

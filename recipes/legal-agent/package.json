@@ -34,7 +34,6 @@
           "docxtpl",
           "lxml",
           "markdown_it",
-          "markitdown",
           "md2ppt",
           "openpyxl",
           "pandas",

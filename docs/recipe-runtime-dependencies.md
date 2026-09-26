@@ -34,7 +34,7 @@ at task startup.
 | `docxtpl` | Yes | Yes | DOCX template filling. |
 | `lxml` | Yes | Yes | Low-level Office XML inspection/editing. |
 | `markdown-it-py` | No | Yes | Markdown parsing for Python-only DOCX generation. |
-| `markitdown` | Yes | Yes | Broad document-to-Markdown conversion where supported. |
+| `markitdown` | Yes | No | Removed from managed runtime because it pulls `magika`/`onnxruntime`, which failed cloud dependency install. |
 | `md2ppt` | No | Yes | Markdown-to-PPTX generation using python-pptx. |
 | `openpyxl` | Yes | Yes | XLSX read/write. |
 | `pandas` | Yes | Yes | Tables/data manipulation. |
@@ -198,7 +198,6 @@ stack:
 - `pandas` for tabular manipulation.
 - `python-pptx` for basic PPTX inspection or generation.
 - `md2ppt` for Markdown-to-PPTX generation without Marp CLI.
-- `markitdown` for broad document-to-Markdown conversion where it works.
 - `pdf2image` for PDF-to-image conversion when its system backend exists.
 - `pdfplumber` for text-based PDF extraction.
 - `pypdf` for PDF structure and text basics.

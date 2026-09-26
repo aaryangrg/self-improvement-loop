@@ -8,7 +8,6 @@ dependencies = [
     "docxtpl",
     "lxml",
     "markdown-it-py",
-    "markitdown",
     "md2ppt",
     "openpyxl",
     "pandas",
