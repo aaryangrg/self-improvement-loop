@@ -198,11 +198,11 @@ stack:
 - `pandas` for tabular manipulation.
 - `python-pptx` for basic PPTX inspection or generation.
 - `md2ppt` for Markdown-to-PPTX generation without Marp CLI.
+- `markitdown` for broad document-to-Markdown conversion where it works.
 - `pdf2image` for PDF-to-image conversion when its system backend exists.
 - `pdfplumber` for text-based PDF extraction.
 - `pypdf` for PDF structure and text basics.
 - `pillow` for image support.
-- `markitdown` for broad document-to-Markdown conversion where it works.
 
 Likely `pi.runtime.python.imports` preflight list:
 
