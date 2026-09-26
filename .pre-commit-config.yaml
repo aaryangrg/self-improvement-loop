@@ -1,0 +1,24 @@
+repos:
+  - repo: local
+    hooks:
+      - id: black
+        name: black
+        entry: uv run black runner scripts
+        language: system
+        pass_filenames: false
+        always_run: true
+        types: [python]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check runner scripts
+        language: system
+        pass_filenames: false
+        always_run: true
+        types: [python]
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+        always_run: true
+        types: [python]

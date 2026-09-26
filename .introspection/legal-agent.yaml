@@ -1,0 +1,5 @@
+name: legal-agent
+path: recipes/legal-agent
+description: Legal agent evaluated on Harvey LAB tasks.
+runtime:
+  llm_mode: managed

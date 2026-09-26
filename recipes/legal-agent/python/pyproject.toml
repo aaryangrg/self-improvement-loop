@@ -1,0 +1,21 @@
+[project]
+name = "legal-agent-runtime"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "defusedxml",
+    "diff-match-patch",
+    "docxtpl",
+    "lxml",
+    "markdown-it-py",
+    "markitdown",
+    "md2ppt",
+    "openpyxl",
+    "pandas",
+    "pdf2image",
+    "pdfplumber",
+    "pillow",
+    "pypdf",
+    "python-docx",
+    "python-pptx",
+]

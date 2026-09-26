@@ -1,0 +1,3 @@
+[submodule "harvey-labs"]
+	path = harvey-labs
+	url = https://github.com/harveyai/harvey-labs.git

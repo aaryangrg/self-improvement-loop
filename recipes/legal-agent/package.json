@@ -1,0 +1,50 @@
+{
+  "name": "legal-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "packageManager": "pnpm@10.18.3",
+  "dependencies": {
+    "pptxgenjs": "^4.0.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "agents": [
+      "./agents/*.yaml"
+    ],
+    "skills": [
+      "./skills/*"
+    ],
+    "extensions": [
+      "./extensions/document-read.ts"
+    ],
+    "runtime": {
+      "python": {
+        "project": "python",
+        "lockfile": "python/uv.lock",
+        "version": ">=3.12,<3.14",
+        "imports": [
+          "defusedxml",
+          "diff_match_patch",
+          "docx",
+          "docxtpl",
+          "lxml",
+          "markdown_it",
+          "markitdown",
+          "md2ppt",
+          "openpyxl",
+          "pandas",
+          "pdf2image",
+          "pdfplumber",
+          "PIL",
+          "pypdf",
+          "pptx"
+        ]
+      }
+    }
+  }
+}

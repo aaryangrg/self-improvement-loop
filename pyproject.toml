@@ -1,0 +1,45 @@
+[project]
+name = "self-improvement-loop"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = []
+
+[project.scripts]
+harvey-runner = "runner.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["runner*"]
+
+[tool.uv]
+package = true
+
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["runner", "scripts"]
+extend-exclude = ["harvey-labs", "dev-docs", "results"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["runner", "scripts"]
+exclude = ["harvey-labs", "dev-docs", "results", ".venv"]
+
+[dependency-groups]
+dev = [
+    "black>=26.5.1",
+    "mypy>=2.3.1",
+    "pre-commit>=4.6.2",
+    "ruff>=0.16.9",
+]
