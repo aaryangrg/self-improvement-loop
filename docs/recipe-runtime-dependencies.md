@@ -88,7 +88,8 @@ at task startup.
 | Tool | Harvey LAB harness | Our first cut | Notes |
 | --- | --- | --- | --- |
 | `bash` | Yes | Yes | Shell execution. |
-| `read` | Yes | Yes | File reading. |
+| `read` | Yes | No | Managed Pi provides a host `read`; recipe tools cannot shadow it. |
+| `read_file` | No | Yes | Recipe-owned document-aware file reading. |
 | `write` | Yes | Yes | File writing. |
 | `edit` | Yes | Yes | File editing. |
 | `glob` | Yes | Covered by `find` | Pi's `find` tool finds files by glob pattern. |
@@ -96,10 +97,12 @@ at task startup.
 | `finish` | Yes | No | Harvey-specific deliverable completion check. Our prompt handles completion. |
 | `ls` | Not listed as Harvey tool | Yes | Supported Pi read-only directory listing. |
 
-Current compatibility choice: only `read` is overridden. The recipe-local
-extension keeps Pi's native `read({ path, offset?, limit? })` schema and native
-path/truncation/image behavior by reusing Pi's `createReadToolDefinition`. It
-swaps in document-aware reads for `.docx`, `.xlsx`, `.pptx`, and `.pdf` through
+Current compatibility choice: use a recipe-owned `read_file` tool instead of
+trying to override the managed host `read` tool. The extension keeps Pi's
+native `read({ path, offset?, limit? })` schema and native
+path/truncation/image behavior by reusing Pi's `createReadToolDefinition`, then
+publishes that definition under `read_file`. It swaps in document-aware reads
+for `.docx`, `.xlsx`, `.pptx`, and `.pdf` through
 `recipes/legal-agent/tools/parse_document.py`. `write` and `edit` remain Pi
 native.
 
@@ -161,7 +164,7 @@ and sometimes rely on system binaries such as `pandoc` and LibreOffice.
 
 Current agent tools in `recipes/legal-agent/agents/agent.yaml`:
 
-- `read`
+- `read_file`
 - `ls`
 - `grep`
 - `find`

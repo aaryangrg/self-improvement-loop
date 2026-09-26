@@ -16,11 +16,11 @@
     "agents": [
       "./agents/*.yaml"
     ],
-    "skills": [
-      "./skills/*"
-    ],
     "extensions": [
       "./extensions/document-read.ts"
+    ],
+    "skills": [
+      "./skills/*"
     ],
     "runtime": {
       "python": {

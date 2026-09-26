@@ -10,7 +10,7 @@ Everything you work with lives under one workspace root. **`bash` starts in the 
 
 ## Tool conventions
 
-- Use `read` to consume input files (handles .docx, .xlsx, .pptx, .pdf, and plain text).
+- Use `read_file` to consume input files (handles .docx, .xlsx, .pptx, .pdf, and plain text).
 - Use the file-type skill manuals to produce binary deliverables
   (.docx, .xlsx, .pptx).
 - Use `write` only for plain markdown — typically a `response.md`

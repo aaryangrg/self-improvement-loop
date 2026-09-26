@@ -1,11 +1,11 @@
 ---
 name: docx
-description: "Use this skill to author, edit, redline, comment on, or validate Microsoft Word .docx files using the available Python document stack. For READING existing .docx files, use the `read` tool; this skill is for producing or modifying .docx deliverables. Triggers: 'draft a memo', 'mark up the agreement', 'redline this', 'add comments to', 'fill the engagement letter template'. Does NOT apply to .pdf, .xlsx, .pptx, or legacy .doc files."
+description: "Use this skill to author, edit, redline, comment on, or validate Microsoft Word .docx files using the available Python document stack. For READING existing .docx files, use the `read_file` tool; this skill is for producing or modifying .docx deliverables. Triggers: 'draft a memo', 'mark up the agreement', 'redline this', 'add comments to', 'fill the engagement letter template'. Does NOT apply to .pdf, .xlsx, .pptx, or legacy .doc files."
 ---
 
 # DOCX Authoring, Editing, Redlining
 
-> **Reading is not in scope.** To read an existing .docx, use the `read` tool.
+> **Reading is not in scope.** To read an existing .docx, use the `read_file` tool.
 > It returns extracted document text. Use this skill for writing, editing,
 > commenting, redlining, and validating .docx files.
 

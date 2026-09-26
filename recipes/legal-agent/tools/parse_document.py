@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parse task document files to text for the recipe-local read tool."""
+"""Parse task document files to text for the recipe-local read_file tool."""
 
 from __future__ import annotations
 

@@ -54,8 +54,8 @@ first Harvey LAB-compatible baseline, not yet an optimized agent.
 
 Current recipe surface:
 
-- Agent tools: `read`, `ls`, `grep`, `find`, `bash`, `write`, and `edit`.
-- Custom `read` extension for text, `.docx`, `.xlsx`, `.pptx`, and `.pdf`.
+- Agent tools: `read_file`, `ls`, `grep`, `find`, `bash`, `write`, and `edit`.
+- Custom `read_file` extension for text, `.docx`, `.xlsx`, `.pptx`, and `.pdf`.
 - Harvey-style `docx`, `xlsx`, and `pptx` skills adapted to Introspection
   workspace paths.
 - Stable sandbox conventions:
@@ -75,7 +75,7 @@ Supported first-cut document capabilities:
 - XLSX generation/editing with `openpyxl`, including formula authoring and
   marking workbooks for recalculation on open.
 - PPTX generation/editing with `python-pptx`, `md2ppt`, and `pptxgenjs`.
-- PDF/text extraction through the custom `read` path where supported by the
+- PDF/text extraction through the custom `read_file` path where supported by the
   installed Python libraries.
 
 Intentional first-cut gaps:

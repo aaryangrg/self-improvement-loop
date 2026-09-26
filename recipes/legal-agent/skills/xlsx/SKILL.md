@@ -1,11 +1,11 @@
 ---
 name: xlsx
-description: "Use this skill to author, edit, scan, or validate Microsoft Excel .xlsx files using the available Python spreadsheet stack. Supports writing formulas and marking workbooks for recalculation on open. For READING existing .xlsx files, use the `read` tool; this skill is for producing or modifying .xlsx deliverables. Triggers: 'build a model', 'create a spreadsheet', 'fill the schedule', 'edit a workbook'. Does NOT apply to .pdf, .docx, .pptx, or legacy .xls files."
+description: "Use this skill to author, edit, scan, or validate Microsoft Excel .xlsx files using the available Python spreadsheet stack. Supports writing formulas and marking workbooks for recalculation on open. For READING existing .xlsx files, use the `read_file` tool; this skill is for producing or modifying .xlsx deliverables. Triggers: 'build a model', 'create a spreadsheet', 'fill the schedule', 'edit a workbook'. Does NOT apply to .pdf, .docx, .pptx, or legacy .xls files."
 ---
 
 # XLSX Authoring And Editing
 
-> **Reading is not in scope.** To read an existing .xlsx, use the `read` tool.
+> **Reading is not in scope.** To read an existing .xlsx, use the `read_file` tool.
 > It extracts each sheet as text. Use this skill for writing, editing, scanning,
 > and validating .xlsx files.
 
@@ -89,7 +89,7 @@ relationships, and package structure.
 
 ## Out Of Scope
 
-- Reading: use the `read` tool.
+- Reading: use the `read_file` tool.
 - Legacy `.xls` files.
 - In-sandbox full Excel-compatible formula recalculation.
 - PivotTable creation or modification.

@@ -57,18 +57,27 @@ async function parseDocument(path: string, format: string): Promise<Buffer> {
 }
 
 export default function documentReadExtension(pi: ExtensionAPI) {
-	pi.registerTool(
-		createReadToolDefinition(process.cwd(), {
-			operations: {
-				access,
-				async detectImageMimeType(path) {
-					return documentFormat(path) ? undefined : detectSupportedImageMimeTypeFromFile(path);
-				},
-				async readFile(path) {
-					const format = documentFormat(path);
-					return format ? parseDocument(path, format) : readFile(path);
-				},
+	const readFileTool = createReadToolDefinition(process.cwd(), {
+		operations: {
+			access,
+			async detectImageMimeType(path) {
+				return documentFormat(path) ? undefined : detectSupportedImageMimeTypeFromFile(path);
 			},
-		}),
-	);
+			async readFile(path) {
+				const format = documentFormat(path);
+				return format ? parseDocument(path, format) : readFile(path);
+			},
+		},
+	});
+
+	readFileTool.name = "read_file";
+	readFileTool.label = "read_file";
+	readFileTool.description =
+		"Read the contents of a workspace file. Supports plain text, images, and document formats (.docx, .xlsx, .pptx, .pdf). For large text output, use offset/limit to continue.";
+	readFileTool.promptSnippet = "Read file contents, including Office/PDF documents";
+	readFileTool.promptGuidelines = [
+		"Use read_file to examine files instead of cat or sed, especially for .docx, .xlsx, .pptx, and .pdf files.",
+	];
+
+	pi.registerTool(readFileTool);
 }

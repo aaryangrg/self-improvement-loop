@@ -1,11 +1,11 @@
 ---
 name: pptx
-description: "Use this skill to author or edit Microsoft PowerPoint .pptx files. Covers generating decks from scratch with PptxGenJS, Markdown-to-PPTX with md2ppt, or python-pptx; editing existing decks in place; and validating output. For READING existing .pptx files, use the `read` tool; do not invoke this skill. Triggers: 'build a deck', 'create slides', 'edit slide N', 'add a chart slide'. Does NOT apply to .pdf, .docx, .xlsx, or .ppt (legacy)."
+description: "Use this skill to author or edit Microsoft PowerPoint .pptx files. Covers generating decks from scratch with PptxGenJS, Markdown-to-PPTX with md2ppt, or python-pptx; editing existing decks in place; and validating output. For READING existing .pptx files, use the `read_file` tool; do not invoke this skill. Triggers: 'build a deck', 'create slides', 'edit slide N', 'add a chart slide'. Does NOT apply to .pdf, .docx, .xlsx, or .ppt (legacy)."
 ---
 
 # PPTX Authoring And Editing
 
-> **Reading is not in scope.** To read an existing .pptx, use the `read` tool.
+> **Reading is not in scope.** To read an existing .pptx, use the `read_file` tool.
 > It returns extracted slide text. Use this skill for writing, editing, and
 > validating .pptx files.
 
@@ -108,7 +108,7 @@ python /workspace/skills/pptx/scripts/validate.py /workspace/outputs/output.pptx
 
 ## Out Of Scope
 
-- Reading: use the `read` tool.
+- Reading: use the `read_file` tool.
 - Full Marp CLI rendering, browser-based rendering, and image/PDF export.
 - High-fidelity arbitrary HTML/CSS-to-PPTX conversion.
 - SmartArt creation (limited python-pptx support).
