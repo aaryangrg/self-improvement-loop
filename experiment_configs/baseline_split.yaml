@@ -1,0 +1,23 @@
+id: baseline_split
+description: Initial train/test split for legal-agent self-improvement. Test is held out from researcher feedback.
+
+defaults:
+  trials_per_task: 1
+  task_concurrency: 3
+  eval_concurrency: 5
+
+splits:
+  train:
+    task_ids:
+      - corporate-ma/compare-matter-plan-against-engagement-letter
+      - trusts-estates-private-client/compare-trust-documents-against-client-instructions
+      - immigration/compare-uscis-filing-receipt-against-original-petition-submission
+      - healthcare-life-sciences/extract-key-terms-from-informed-consent-form
+      - intellectual-property/extract-key-terms-from-trial-exhibit-list
+      - litigation-dispute-resolution/identify-issues-in-counterparty-complaint
+  test:
+    task_ids:
+      - corporate-ma/compare-closing-checklist-against-ma-agreement
+      - banking-finance/compare-credit-agreement-against-term-sheet
+      - intellectual-property/extract-open-source-license-obligations-from-targets-software-disclosure-schedule
+      - employment-labor/identify-issues-in-counterparty-motion-brief

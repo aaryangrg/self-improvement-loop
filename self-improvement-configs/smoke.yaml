@@ -1,0 +1,16 @@
+id: smoke
+description: Smoke self-improvement loop over the Harvey smoke split.
+
+seed_recipe: recipes/legal-agent
+split_config: experiment_configs/smoke_split.yaml
+
+loop:
+  max_epochs: 2
+  test_every: 1
+
+researcher:
+  epoch_session_mode: fresh
+
+verifier:
+  enabled: true
+  max_revision_attempts: 2

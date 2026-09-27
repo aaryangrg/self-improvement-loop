@@ -13,13 +13,13 @@ description: "Use this skill to author, edit, scan, or validate Microsoft Excel 
 
 | Goal | Use |
 |---|---|
-| Build a workbook from scratch | `openpyxl` directly or `/workspace/skills/xlsx/scripts/build_workbook.py` |
+| Build a workbook from scratch | `openpyxl` directly or `/workspace/.pi/skills/xlsx/scripts/build_workbook.py` |
 | Write formulas | Assign formula strings such as `=B2*C2` with `openpyxl` |
 | Edit cells in an existing file | `openpyxl.load_workbook(...)` -> mutate -> save |
-| Scan for formula-error literals | `/workspace/skills/xlsx/scripts/scan_errors.py` |
-| Validate before delivery | `/workspace/skills/xlsx/scripts/validate.py` |
+| Scan for formula-error literals | `/workspace/.pi/skills/xlsx/scripts/scan_errors.py` |
+| Validate before delivery | `/workspace/.pi/skills/xlsx/scripts/validate.py` |
 
-Skill scripts are available at `/workspace/skills/xlsx/scripts/`. Invoke them
+Skill scripts are available at `/workspace/.pi/skills/xlsx/scripts/`. Invoke them
 from `bash` with `python`.
 
 ## Formula Support
@@ -34,7 +34,7 @@ wb.calculation.forceFullCalc = True
 ```
 
 This tells spreadsheet applications to recalculate formulas when the workbook is
-opened. `/workspace/skills/xlsx/scripts/build_workbook.py` already sets these flags.
+opened. `/workspace/.pi/skills/xlsx/scripts/build_workbook.py` already sets these flags.
 
 Use formulas for transparency:
 
@@ -59,10 +59,10 @@ Apply these to every workbook unless the task explicitly overrides them:
 - Avoid merged cells in input ranges.
 - Put units in adjacent cells, not inside numeric-value cells.
 
-`/workspace/skills/xlsx/scripts/build_workbook.py` applies these conventions from a JSON spec:
+`/workspace/.pi/skills/xlsx/scripts/build_workbook.py` applies these conventions from a JSON spec:
 
 ```bash
-python /workspace/skills/xlsx/scripts/build_workbook.py spec.json /workspace/outputs/output.xlsx
+python /workspace/.pi/skills/xlsx/scripts/build_workbook.py spec.json /workspace/outputs/output.xlsx
 ```
 
 ## Error Scan
@@ -70,7 +70,7 @@ python /workspace/skills/xlsx/scripts/build_workbook.py spec.json /workspace/out
 After creating or editing a workbook, scan for visible formula-error literals:
 
 ```bash
-python /workspace/skills/xlsx/scripts/scan_errors.py /workspace/outputs/output.xlsx > /workspace/outputs/errors.json
+python /workspace/.pi/skills/xlsx/scripts/scan_errors.py /workspace/outputs/output.xlsx > /workspace/outputs/errors.json
 ```
 
 The scan reports cells with `#REF!`, `#DIV/0!`, `#VALUE!`, `#NAME?`, `#NULL!`,
@@ -81,7 +81,7 @@ The scan reports cells with `#REF!`, `#DIV/0!`, `#VALUE!`, `#NAME?`, `#NULL!`,
 Always run validation before declaring the task complete:
 
 ```bash
-python /workspace/skills/xlsx/scripts/validate.py /workspace/outputs/output.xlsx
+python /workspace/.pi/skills/xlsx/scripts/validate.py /workspace/outputs/output.xlsx
 ```
 
 Validation checks ZIP integrity, XML well-formedness, content types, sheet

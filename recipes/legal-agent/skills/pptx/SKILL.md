@@ -13,32 +13,32 @@ description: "Use this skill to author or edit Microsoft PowerPoint .pptx files.
 
 | Goal | Use |
 |---|---|
-| Generate a deck from a JSON spec | `/workspace/skills/pptx/scripts/generate_pptxgenjs.js` |
-| Generate a deck from Markdown | `/workspace/skills/pptx/scripts/generate_from_md.py` |
+| Generate a deck from a JSON spec | `/workspace/.pi/skills/pptx/scripts/generate_pptxgenjs.js` |
+| Generate a deck from Markdown | `/workspace/.pi/skills/pptx/scripts/generate_from_md.py` |
 | Build slides programmatically | `python-pptx` directly |
-| Edit a shape on an existing slide | `/workspace/skills/pptx/scripts/edit_shape.py` |
-| Add or remove a slide | `/workspace/skills/pptx/scripts/unpack.py` -> mutate XML -> `/workspace/skills/pptx/scripts/pack.py` |
-| QA a deck deterministically | `/workspace/skills/pptx/scripts/deterministic_qa.py` |
-| Validate before delivery | `/workspace/skills/pptx/scripts/validate.py` |
+| Edit a shape on an existing slide | `/workspace/.pi/skills/pptx/scripts/edit_shape.py` |
+| Add or remove a slide | `/workspace/.pi/skills/pptx/scripts/unpack.py` -> mutate XML -> `/workspace/.pi/skills/pptx/scripts/pack.py` |
+| QA a deck deterministically | `/workspace/.pi/skills/pptx/scripts/deterministic_qa.py` |
+| Validate before delivery | `/workspace/.pi/skills/pptx/scripts/validate.py` |
 
-Skill scripts are available at `/workspace/skills/pptx/scripts/`. Invoke them
+Skill scripts are available at `/workspace/.pi/skills/pptx/scripts/`. Invoke them
 from `bash` with `python`.
 
 ## Creating A New Deck
 
-Use `/workspace/skills/pptx/scripts/generate_pptxgenjs.js` when a deck is
+Use `/workspace/.pi/skills/pptx/scripts/generate_pptxgenjs.js` when a deck is
 easiest to describe as structured JSON with text, bullets, images, notes, and
 positioned shapes:
 
 ```bash
-node /workspace/skills/pptx/scripts/generate_pptxgenjs.js deck.json /workspace/outputs/output.pptx
+node /workspace/.pi/skills/pptx/scripts/generate_pptxgenjs.js deck.json /workspace/outputs/output.pptx
 ```
 
-Use `/workspace/skills/pptx/scripts/generate_from_md.py` when the source content
+Use `/workspace/.pi/skills/pptx/scripts/generate_from_md.py` when the source content
 is already Markdown:
 
 ```bash
-python /workspace/skills/pptx/scripts/generate_from_md.py deck.md /workspace/outputs/output.pptx
+python /workspace/.pi/skills/pptx/scripts/generate_from_md.py deck.md /workspace/outputs/output.pptx
 ```
 
 For best Markdown conversion, use one `#` title slide and `##` headings for
@@ -56,16 +56,16 @@ Write final deliverables under `/workspace/outputs`.
 Three-step pattern, like docx:
 
 ```bash
-python /workspace/skills/pptx/scripts/unpack.py input.pptx workdir/
+python /workspace/.pi/skills/pptx/scripts/unpack.py input.pptx workdir/
 # edit XML files under workdir/ppt/slides/
-python /workspace/skills/pptx/scripts/pack.py workdir/ /workspace/outputs/output.pptx
-python /workspace/skills/pptx/scripts/validate.py /workspace/outputs/output.pptx
+python /workspace/.pi/skills/pptx/scripts/pack.py workdir/ /workspace/outputs/output.pptx
+python /workspace/.pi/skills/pptx/scripts/validate.py /workspace/outputs/output.pptx
 ```
 
 For surgical shape edits without unpacking, use `edit_shape.py`:
 
 ```bash
-python /workspace/skills/pptx/scripts/edit_shape.py input.pptx \
+python /workspace/.pi/skills/pptx/scripts/edit_shape.py input.pptx \
   /workspace/outputs/output.pptx \
   --slide 2 --shape "Title 1" --op set_text --value "New title"
 ```
@@ -85,7 +85,7 @@ JSON patch ops: `set_text`, `set_position` (EMU), `set_size`, `recolor`, `delete
 After every generation, run:
 
 ```bash
-python /workspace/skills/pptx/scripts/deterministic_qa.py /workspace/outputs/output.pptx > /workspace/outputs/qa.json
+python /workspace/.pi/skills/pptx/scripts/deterministic_qa.py /workspace/outputs/output.pptx > /workspace/outputs/qa.json
 ```
 
 `deterministic_qa.py` checks:
@@ -103,7 +103,7 @@ violations before delivery.
 **Always run `validate.py` before declaring done.** Schema-validates against ECMA-376 PresentationML XSDs, checks rId consistency, content-type registration.
 
 ```bash
-python /workspace/skills/pptx/scripts/validate.py /workspace/outputs/output.pptx
+python /workspace/.pi/skills/pptx/scripts/validate.py /workspace/outputs/output.pptx
 ```
 
 ## Out Of Scope

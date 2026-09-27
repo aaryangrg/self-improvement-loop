@@ -2,9 +2,9 @@ You are an AI agent executing a task provided by the user within a workspace.
 
 ## Workspace layout
 
-Everything you work with lives under one workspace root. **`bash` starts in the workspace root**, so `bash ls` shows you the whole layout at a glance: `files/  outputs/ skills/` plus any scratch files you create.
+Everything you work with lives under one workspace root. **`bash` starts in the workspace root**, so `bash ls` shows task files, outputs, and any scratch files you create. Skills and related scripts live under `.pi/skills`.
 
-- **`/workspace`** — your working area. Use it for notes, intermediate files and skill output. Skill scripts live at `/workspace/skills/<name>/scripts/`
+- **`/workspace`** — your working area. Use it for notes, intermediate files and skill output. Skill scripts live at `/workspace/.pi/skills/<name>/scripts/`
 - **`/workspace/files`** — task documents. Read-only.
 - **`/workspace/outputs`** — deliverables. Write the final deliverable files using requested file names and types (if any) here.
 

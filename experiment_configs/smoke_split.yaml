@@ -1,0 +1,14 @@
+id: smoke_split
+description: Minimal split for debugging runner, upload, task execution, artifact download, and evaluation plumbing.
+
+defaults:
+  trials_per_task: 1
+  task_concurrency: 3
+  eval_concurrency: 5
+
+splits:
+  train:
+    task_ids:
+      - corporate-ma/compare-matter-plan-against-engagement-letter
+  test:
+    task_ids: []

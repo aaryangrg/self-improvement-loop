@@ -13,16 +13,16 @@ description: "Use this skill to author, edit, redline, comment on, or validate M
 
 | Goal | Use |
 |---|---|
-| Generate a new doc from Markdown | `/workspace/skills/docx/scripts/generate_from_md.py` |
+| Generate a new doc from Markdown | `/workspace/.pi/skills/docx/scripts/generate_from_md.py` |
 | Generate a new doc programmatically | `python-docx` directly |
-| Fill a templated agreement | `/workspace/skills/docx/scripts/template_fill.py` with `docxtpl` |
-| Edit an existing doc | `/workspace/skills/docx/scripts/unpack.py` -> mutate XML -> `/workspace/skills/docx/scripts/pack.py` |
-| Produce a tracked-changes redline | `/workspace/skills/docx/scripts/redline.py` |
-| Add comments to a passage | `/workspace/skills/docx/scripts/comments_add.py` |
-| Accept all redlines | `/workspace/skills/docx/scripts/accept_changes.py` |
-| Validate before delivery | `/workspace/skills/docx/scripts/validate.py` |
+| Fill a templated agreement | `/workspace/.pi/skills/docx/scripts/template_fill.py` with `docxtpl` |
+| Edit an existing doc | `/workspace/.pi/skills/docx/scripts/unpack.py` -> mutate XML -> `/workspace/.pi/skills/docx/scripts/pack.py` |
+| Produce a tracked-changes redline | `/workspace/.pi/skills/docx/scripts/redline.py` |
+| Add comments to a passage | `/workspace/.pi/skills/docx/scripts/comments_add.py` |
+| Accept all redlines | `/workspace/.pi/skills/docx/scripts/accept_changes.py` |
+| Validate before delivery | `/workspace/.pi/skills/docx/scripts/validate.py` |
 
-Skill scripts are available at `/workspace/skills/docx/scripts/`. Invoke them
+Skill scripts are available at `/workspace/.pi/skills/docx/scripts/`. Invoke them
 from `bash` with `python`.
 
 ## Creating A New Document
@@ -30,18 +30,18 @@ from `bash` with `python`.
 Use `python-docx` for ordinary drafting. It is the default path for memos,
 letters, tables, schedules, and documents with computed values.
 
-Use `/workspace/skills/docx/scripts/generate_from_md.py` when you have drafted the document as
+Use `/workspace/.pi/skills/docx/scripts/generate_from_md.py` when you have drafted the document as
 Markdown:
 
 ```bash
-python /workspace/skills/docx/scripts/generate_from_md.py draft.md /workspace/outputs/output.docx
+python /workspace/.pi/skills/docx/scripts/generate_from_md.py draft.md /workspace/outputs/output.docx
 ```
 
-Use `/workspace/skills/docx/scripts/template_fill.py` when the input is an existing .docx template with
+Use `/workspace/.pi/skills/docx/scripts/template_fill.py` when the input is an existing .docx template with
 Jinja-style placeholders:
 
 ```bash
-python /workspace/skills/docx/scripts/template_fill.py template.docx context.json /workspace/outputs/output.docx
+python /workspace/.pi/skills/docx/scripts/template_fill.py template.docx context.json /workspace/outputs/output.docx
 ```
 
 Write final deliverables under `/workspace/outputs`.
@@ -51,10 +51,10 @@ Write final deliverables under `/workspace/outputs`.
 Three-step pattern:
 
 ```bash
-python /workspace/skills/docx/scripts/unpack.py input.docx workdir/
+python /workspace/.pi/skills/docx/scripts/unpack.py input.docx workdir/
 # edit XML files under workdir/word/
-python /workspace/skills/docx/scripts/pack.py workdir/ /workspace/outputs/output.docx
-python /workspace/skills/docx/scripts/validate.py /workspace/outputs/output.docx
+python /workspace/.pi/skills/docx/scripts/pack.py workdir/ /workspace/outputs/output.docx
+python /workspace/.pi/skills/docx/scripts/validate.py /workspace/outputs/output.docx
 ```
 
 Key files inside the unpacked tree:
@@ -70,7 +70,7 @@ Key files inside the unpacked tree:
 ## Redlines
 
 ```bash
-python /workspace/skills/docx/scripts/redline.py original.docx revised.docx /workspace/outputs/redlined.docx \
+python /workspace/.pi/skills/docx/scripts/redline.py original.docx revised.docx /workspace/outputs/redlined.docx \
   --author "Reviewer" --date "2026-04-30"
 ```
 
@@ -81,7 +81,7 @@ mode uses the available Python diff libraries.
 ## Comments
 
 ```bash
-python /workspace/skills/docx/scripts/comments_add.py document.docx comments.json /workspace/outputs/commented.docx
+python /workspace/.pi/skills/docx/scripts/comments_add.py document.docx comments.json /workspace/outputs/commented.docx
 ```
 
 `comments.json` is a list of `{anchor_text, author, comment}` objects. Anchor
@@ -91,7 +91,7 @@ comments the first occurrence.
 ## Accept Changes
 
 ```bash
-python /workspace/skills/docx/scripts/accept_changes.py redlined.docx /workspace/outputs/accepted.docx
+python /workspace/.pi/skills/docx/scripts/accept_changes.py redlined.docx /workspace/outputs/accepted.docx
 ```
 
 This script directly edits OOXML: inserted text is kept and deleted text is
@@ -102,7 +102,7 @@ removed. It does not require an office application.
 Always run validation before declaring the task complete:
 
 ```bash
-python /workspace/skills/docx/scripts/validate.py /workspace/outputs/output.docx
+python /workspace/.pi/skills/docx/scripts/validate.py /workspace/outputs/output.docx
 ```
 
 Validation checks ZIP integrity, XML well-formedness, content types, and

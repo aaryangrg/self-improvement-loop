@@ -1,0 +1,16 @@
+id: baseline
+description: Baseline self-improvement loop over the Harvey baseline split.
+
+seed_recipe: recipes/legal-agent
+split_config: experiment_configs/baseline_split.yaml
+
+loop:
+  max_epochs: 10
+  test_every: 3
+
+researcher:
+  epoch_session_mode: fresh
+
+verifier:
+  enabled: true
+  max_revision_attempts: 2

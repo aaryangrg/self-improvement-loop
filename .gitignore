@@ -18,6 +18,8 @@ harvey-labs/.pytest_cache/
 
 results/cache/
 results/tasks/
+results/experiment_runs/
+results/self-improvement/
 
 .DS_Store
 .idea/

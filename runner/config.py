@@ -12,3 +12,10 @@ class RunnerConfig:
     runtime_id: str | None = None
     environment: str = "development"
     agent: str = "agent"
+    enable_eval: bool = True
+    eval_judges: tuple[str, ...] = ("gpt-4.1",)
+    eval_parallel: int = 2
+    cli_retries: int = 2
+    download_retries: int = 2
+    stream_reattaches: int = 2
+    retry_backoff_seconds: float = 2.0

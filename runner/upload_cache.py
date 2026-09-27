@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,11 +17,15 @@ class CachedUpload:
 
 
 class UploadCache:
+    _lock = threading.Lock()
+
     def __init__(self, path: Path) -> None:
         self.path = path
         self._files = self._read()
 
     def get(self, cache_key: str, size: int) -> CachedUpload | None:
+        with self._lock:
+            self._files = self._read()
         cached = self._files.get(cache_key)
         if cached is None or cached.size != size:
             return None
@@ -33,14 +38,18 @@ class UploadCache:
             size=size,
             uploaded_at=datetime.now(UTC).isoformat(),
         )
-        self._files[cache_key] = cached
-        self.write()
+        with self._lock:
+            self._files = self._read()
+            self._files[cache_key] = cached
+            self.write()
         return cached
 
     def remove(self, cache_key: str) -> None:
-        if cache_key in self._files:
-            del self._files[cache_key]
-            self.write()
+        with self._lock:
+            self._files = self._read()
+            if cache_key in self._files:
+                del self._files[cache_key]
+                self.write()
 
     def write(self) -> None:
         payload = {

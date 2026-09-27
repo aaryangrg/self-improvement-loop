@@ -6,6 +6,7 @@ from pathlib import Path
 from .config import RunnerConfig
 from .evaluate import evaluate_outputs
 from .harvey import load_task
+from .incidents import RunIncidents
 from .introspection import IntrospectionClient, UploadedFile
 from .paths import task_result_dir
 from .prompt import build_prompt
@@ -23,7 +24,15 @@ def run_one(task_id: str, trial: int, config: RunnerConfig) -> Path:
     outputs_dir = trial_dir / "outputs"
     trial_dir.mkdir(parents=True, exist_ok=True)
 
-    client = IntrospectionClient(config.repo_root)
+    incidents = RunIncidents()
+    client = IntrospectionClient(
+        config.repo_root,
+        incidents=incidents,
+        cli_retries=config.cli_retries,
+        download_retries=config.download_retries,
+        stream_reattaches=config.stream_reattaches,
+        retry_backoff_seconds=config.retry_backoff_seconds,
+    )
     cache = UploadCache(config.repo_root / config.upload_cache_path)
     uploads: list[UploadedFile] = []
     for document in task.documents:
@@ -55,14 +64,57 @@ def run_one(task_id: str, trial: int, config: RunnerConfig) -> Path:
         prompt=build_prompt(task),
         files=uploads,
     )
-    client.stream_until_finished(handle.task_id, handle.run_id)
+    _write_json(trial_dir / "introspection-task-handle.json", handle.__dict__)
 
-    conversation = client.get_conversation(handle.task_id)
-    _write_json(trial_dir / "conversation.json", conversation)
+    try:
+        client.stream_until_finished(handle.task_id, handle.run_id)
+    except RuntimeError as error:
+        incidents.record_platform_failure(str(error))
+        _write_json(
+            trial_dir / "execution_error.json",
+            {"status": "error", "phase": "execution", "message": str(error)},
+        )
+        _salvage_after_task_start(client, handle.task_id, outputs_dir, trial_dir)
+        _write_json(trial_dir / "incidents.json", incidents.to_dict())
+        raise
 
-    task_payload = client.get_task(handle.task_id)
-    client.download_output_files(task_payload, outputs_dir)
+    _salvage_after_task_start(client, handle.task_id, outputs_dir, trial_dir)
+    _write_json(trial_dir / "incidents.json", incidents.to_dict())
 
-    evaluation = evaluate_outputs(task, outputs_dir)
+    evaluation = evaluate_outputs(task, outputs_dir, trial_dir, config)
     _write_json(trial_dir / "evaluation.json", evaluation)
     return trial_dir
+
+
+def _salvage_after_task_start(
+    client: IntrospectionClient,
+    task_id: str,
+    outputs_dir: Path,
+    trial_dir: Path,
+) -> None:
+    try:
+        conversation = client.get_conversation(task_id)
+        _write_json(trial_dir / "conversation.json", conversation)
+    except RuntimeError as error:
+        _write_json(
+            trial_dir / "conversation_error.json",
+            {"status": "error", "phase": "conversation", "message": str(error)},
+        )
+
+    try:
+        task_payload = client.get_task(task_id)
+        _write_json(trial_dir / "introspection-task.json", task_payload)
+    except RuntimeError as error:
+        _write_json(
+            trial_dir / "task_fetch_error.json",
+            {"status": "error", "phase": "task_fetch", "message": str(error)},
+        )
+        return
+
+    try:
+        client.download_output_files(task_payload, outputs_dir)
+    except RuntimeError as error:
+        _write_json(
+            trial_dir / "artifact_download_error.json",
+            {"status": "error", "phase": "artifact_download", "message": str(error)},
+        )
