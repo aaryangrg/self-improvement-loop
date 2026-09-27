@@ -87,7 +87,7 @@ class IntrospectionClient:
 
     def pin_runtime_branch(self, runtime_id: str, branch: str) -> Any:
         return self._json(
-            ["runtimes", "pin", runtime_id, "--branch", branch],
+            ["runtimes", "pin", runtime_id, "--branch", branch, "--yes"],
             timeout=300,
             retries=0,
         )
