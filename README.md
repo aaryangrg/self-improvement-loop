@@ -185,15 +185,97 @@ rate calculations. Aggregates report both `number_of_scored_trials` and
 
 Reusable self-improvement settings live under `self-improvement-configs/`.
 
+Create the local run skeleton first:
+
 ```bash
-uv run python -m runner self-improve start \
+uv run python -m runner self-improve bootstrap \
   --config self-improvement-configs/smoke.yaml \
+  --run-id run-001
+```
+
+This creates:
+
+```text
+recipes/self-improvement/<run-id>/legal-agent/
+.introspection/self-improvement-<run-id>.yaml
+results/self-improvement/<run-id>/
+results/self-improvement/<run-id>/metadata/runtime.json
+```
+
+Commit and push the bootstrap recipe/manifest to `main`, then create the
+Introspection runtime and record it:
+
+```bash
+uv run python -m runner self-improve commit-bootstrap --run-id run-001
+```
+
+```bash
+uv run python -m runner self-improve create-runtime --run-id run-001
+```
+
+If the runtime was created manually, record it instead:
+
+```bash
+uv run python -m runner self-improve record-runtime \
+  --run-id run-001 \
   --runtime-id <runtime-id>
 ```
 
-This creates the working recipe, Introspection manifest, baseline snapshot, and
-research workspace, then runs epoch 0 train and epoch 0 test. Epoch 0 always
-runs both splits because it establishes the baseline.
+For the epoch loop, create a branch and draft PR. The branch command checks that
+the worktree is clean, switches to `main`, creates the PR branch, and records
+that branch in `metadata/runtime.json`. The PR command switches to the recorded
+branch, pushes it, opens the PR, and records `pr/N`.
+
+```bash
+uv run python -m runner self-improve create-pr-branch --run-id run-001
+
+uv run python -m runner self-improve open-pr --run-id run-001
+```
+
+If a PR already exists, record it manually instead:
+
+```bash
+uv run python -m runner self-improve record-pr \
+  --run-id run-001 \
+  --pr-number <number> \
+  --branch self-improvement/run-001
+
+uv run python -m runner self-improve pin-staging-pr --run-id run-001
+```
+
+Candidate epoch commits need to be pushed to the PR branch so Introspection can
+build them. Best-checkpoint or final promotion can still be delayed until the
+overall run is done.
+
+After each verified recipe edit, commit and push the candidate:
+
+```bash
+uv run python -m runner self-improve commit-candidate \
+  --run-id run-001 \
+  --epoch 1
+```
+
+Run epoch 0 after the runtime is available. Baseline is just epoch `0` using
+the same train/test commands as every later epoch:
+
+```bash
+uv run python -m runner self-improve run-train \
+  --config self-improvement-configs/smoke.yaml \
+  --run-id run-001 \
+  --epoch 0
+
+uv run python -m runner self-improve run-test \
+  --config self-improvement-configs/smoke.yaml \
+  --run-id run-001 \
+  --epoch 0
+
+uv run python -m runner self-improve refresh-metrics --run-id run-001
+uv run python -m runner self-improve update-best-candidate --run-id run-001
+```
+
+Epoch 0 should run both splits because it establishes the baseline. Later train
+epochs can use the same `run-train --epoch N` command after each verified recipe
+change.
 
 If `--run-id` is omitted, the runner generates an id like
 `run-20260927-090512-345678`. You can still provide `--run-id` to choose a
@@ -207,13 +289,15 @@ recipes/self-improvement/<run-id>/legal-agent/
 results/self-improvement/<run-id>/
 ```
 
-You can also create only the local run skeleton without executing tasks:
+For now, self-improvement iteration is expected to use Git-backed Introspection
+candidate versions rather than `introspection dev`. We observed that
+`introspection dev` exits without attaching in this project and development
+tasks fail even when the same runtime works in staging. See
+`docs/self-improvement-run-model.md` for the recorded finding and the PR-backed
+runtime model.
 
-```bash
-uv run python -m runner self-improve bootstrap \
-  --config self-improvement-configs/smoke.yaml \
-  --run-id run-001
-```
+Once `metadata/runtime.json` contains a runtime id, later train/test commands do
+not need `--runtime-id`; they read it from metadata.
 
 Self-improvement epoch runs write graph-ready metrics to:
 

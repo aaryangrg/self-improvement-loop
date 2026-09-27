@@ -11,10 +11,14 @@ from runner.config import RunnerConfig
 from runner.self_improvement import (
     bootstrap_run,
     generate_run_id,
+    load_runtime_metadata,
     load_self_improvement_config,
+    record_candidate,
+    record_pr,
+    record_runtime,
     refresh_metrics,
     run_epoch_split,
-    start_self_improvement_run,
+    runner_config_with_runtime_metadata,
     update_best_candidate,
 )
 
@@ -97,6 +101,79 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                 "baseline system\n",
             )
             self.assertTrue((run.results_dir / "metadata" / "run.json").exists())
+            runtime_metadata = load_runtime_metadata(repo_root, "run-001")
+            self.assertEqual(runtime_metadata.runtime_name, "self-improvement-run-001")
+            self.assertEqual(runtime_metadata.environment, "staging")
+            self.assertEqual(
+                runtime_metadata.manifest,
+                ".introspection/self-improvement-run-001.yaml",
+            )
+            self.assertEqual(
+                runtime_metadata.working_recipe,
+                "recipes/self-improvement/run-001/legal-agent",
+            )
+            self.assertIsNone(runtime_metadata.runtime_id)
+
+    def test_runtime_metadata_records_runtime_pr_and_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            seed_recipe = repo_root / "recipes" / "legal-agent"
+            seed_recipe.mkdir(parents=True)
+            (seed_recipe / "SYSTEM.md").write_text("baseline system\n", encoding="utf-8")
+            split_config = repo_root / "experiment_configs" / "smoke_split.yaml"
+            split_config.parent.mkdir(parents=True)
+            split_config.write_text("id: smoke\n", encoding="utf-8")
+            config_path = repo_root / "self-improvement-configs" / "smoke.yaml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "id: smoke",
+                        "seed_recipe: recipes/legal-agent",
+                        "split_config: experiment_configs/smoke_split.yaml",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_self_improvement_config(config_path)
+            bootstrap_run(repo_root, config_path, config, "run-001")
+
+            runtime = record_runtime(
+                repo_root,
+                "run-001",
+                runtime_id="runtime-123",
+                runtime_group_id="group-123",
+            )
+            pr = record_pr(
+                repo_root,
+                "run-001",
+                pr_number=17,
+                pr_branch="self-improvement/run-001",
+                pr_url="https://github.example/pr/17",
+            )
+            candidate = record_candidate(
+                repo_root,
+                "run-001",
+                candidate_commit="abc123",
+                candidate_version_id="version-123",
+            )
+
+            self.assertEqual(runtime.runtime_id, "runtime-123")
+            self.assertEqual(runtime.runtime_group_id, "group-123")
+            self.assertEqual(pr.pr_ref, "pr/17")
+            self.assertEqual(pr.pr_branch, "self-improvement/run-001")
+            self.assertEqual(candidate.candidate_commit, "abc123")
+            self.assertEqual(candidate.candidate_version_id, "version-123")
+
+            resolved = runner_config_with_runtime_metadata(
+                repo_root,
+                "run-001",
+                RunnerConfig(repo_root=repo_root, runtime_id=None),
+            )
+            self.assertEqual(resolved.runtime_name, "self-improvement-run-001")
+            self.assertEqual(resolved.runtime_id, "runtime-123")
+            self.assertEqual(resolved.environment, "staging")
 
     def test_run_epoch_split_writes_train_and_test_to_conventional_epoch_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -168,76 +245,6 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
             self.assertEqual(test_call.kwargs["experiment_run_id"], "epoch-003")
             self.assertFalse(train_call.kwargs["include_split_subdir"])
             self.assertFalse(test_call.kwargs["include_split_subdir"])
-
-    def test_start_runs_epoch_zero_train_and_test_then_updates_metrics_and_best(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            repo_root = Path(temp_dir)
-            seed_recipe = repo_root / "recipes" / "legal-agent"
-            seed_recipe.mkdir(parents=True)
-            (seed_recipe / "SYSTEM.md").write_text("baseline system\n", encoding="utf-8")
-
-            split_config = repo_root / "experiment_configs" / "smoke_split.yaml"
-            split_config.parent.mkdir(parents=True)
-            split_config.write_text("id: smoke\n", encoding="utf-8")
-
-            config_path = repo_root / "self-improvement-configs" / "smoke.yaml"
-            config_path.parent.mkdir(parents=True)
-            config_path.write_text(
-                "\n".join(
-                    [
-                        "id: smoke",
-                        "seed_recipe: recipes/legal-agent",
-                        "split_config: experiment_configs/smoke_split.yaml",
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            config = load_self_improvement_config(config_path)
-            runner_config = RunnerConfig(repo_root=repo_root, runtime_id="runtime-123")
-
-            train_dir = (
-                repo_root
-                / "results"
-                / "self-improvement"
-                / "run-001"
-                / "epochs"
-                / "epoch-000"
-            )
-            test_dir = repo_root / "results" / "self-improvement" / "run-001" / "test" / "epoch-000"
-            with (
-                patch("runner.self_improvement.run_epoch_split") as run_epoch,
-                patch("runner.self_improvement.refresh_metrics") as refresh,
-                patch("runner.self_improvement.update_best_candidate") as update_best,
-            ):
-                run_epoch.side_effect = [train_dir, test_dir]
-                refresh.return_value = [{"epoch": 0, "train_task_pass_rate": 0.25}]
-                update_best.return_value = {"best_epoch": 0, "is_new_best": True}
-
-                result = start_self_improvement_run(
-                    repo_root=repo_root,
-                    config_path=config_path,
-                    config=config,
-                    run_id="run-001",
-                    runner_config=runner_config,
-                )
-
-            self.assertEqual(
-                result.run.results_dir,
-                repo_root / "results" / "self-improvement" / "run-001",
-            )
-            self.assertEqual(result.train_dir, train_dir)
-            self.assertEqual(result.test_dir, test_dir)
-            self.assertEqual(result.metrics, [{"epoch": 0, "train_task_pass_rate": 0.25}])
-            self.assertEqual(result.best_candidate, {"best_epoch": 0, "is_new_best": True})
-            self.assertEqual(run_epoch.call_count, 2)
-            train_call, test_call = run_epoch.call_args_list
-            self.assertEqual(train_call.kwargs["epoch"], 0)
-            self.assertEqual(train_call.kwargs["split_kind"], "train")
-            self.assertEqual(test_call.kwargs["epoch"], 0)
-            self.assertEqual(test_call.kwargs["split_kind"], "test")
-            refresh.assert_called_once_with(repo_root, "run-001")
-            update_best.assert_called_once_with(repo_root, "run-001")
 
     def test_refresh_metrics_combines_train_and_optional_test_epoch_aggregates(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

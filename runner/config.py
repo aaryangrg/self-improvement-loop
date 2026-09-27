@@ -10,7 +10,7 @@ class RunnerConfig:
     upload_cache_path: Path = Path("results/cache/introspection-files.json")
     runtime_name: str = "legal-agent"
     runtime_id: str | None = None
-    environment: str = "development"
+    environment: str = "staging"
     agent: str = "agent"
     enable_eval: bool = True
     eval_judges: tuple[str, ...] = ("gpt-4.1",)

@@ -4,7 +4,7 @@ import csv
 import json
 import re
 import shutil
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -56,12 +56,22 @@ class SelfImprovementRun:
 
 
 @dataclass(frozen=True)
-class SelfImprovementStartResult:
-    run: SelfImprovementRun
-    train_dir: Path
-    test_dir: Path
-    metrics: list[dict[str, Any]]
-    best_candidate: dict[str, Any]
+class RuntimeMetadata:
+    run_id: str
+    runtime_name: str
+    environment: str
+    manifest: str
+    working_recipe: str
+    runtime_id: str | None = None
+    runtime_group_id: str | None = None
+    pr_number: int | None = None
+    pr_ref: str | None = None
+    pr_branch: str | None = None
+    pr_url: str | None = None
+    bootstrap_commit: str | None = None
+    candidate_commit: str | None = None
+    candidate_version_id: str | None = None
+    updated_at: str | None = None
 
 
 SplitKind = Literal["train", "test"]
@@ -168,47 +178,183 @@ def bootstrap_run(
         manifest,
     )
 
-    return SelfImprovementRun(
+    run = SelfImprovementRun(
         run_id=run_id,
         config_id=config.id,
         working_recipe=working_recipe,
         manifest=manifest,
         results_dir=results_dir,
     )
+    initialize_runtime_metadata(repo_root, run)
+    return run
 
 
-def start_self_improvement_run(
+def load_runtime_metadata(repo_root: Path, run_id: str) -> RuntimeMetadata:
+    validate_run_id(run_id)
+    path = _runtime_metadata_path(repo_root, run_id)
+    if not path.exists():
+        raise FileNotFoundError(f"runtime metadata not found: {path}")
+    payload = _load_json(path)
+    pr_number_payload = payload.get("pr_number")
+    pr_number = int(pr_number_payload) if pr_number_payload is not None else None
+    return RuntimeMetadata(
+        run_id=str(payload["run_id"]),
+        runtime_name=str(payload["runtime_name"]),
+        environment=str(payload.get("environment", "staging")),
+        manifest=str(payload["manifest"]),
+        working_recipe=str(payload["working_recipe"]),
+        runtime_id=_optional_str(payload.get("runtime_id")),
+        runtime_group_id=_optional_str(payload.get("runtime_group_id")),
+        pr_number=pr_number,
+        pr_ref=_optional_str(payload.get("pr_ref")),
+        pr_branch=_optional_str(payload.get("pr_branch")),
+        pr_url=_optional_str(payload.get("pr_url")),
+        bootstrap_commit=_optional_str(payload.get("bootstrap_commit")),
+        candidate_commit=_optional_str(payload.get("candidate_commit")),
+        candidate_version_id=_optional_str(payload.get("candidate_version_id")),
+        updated_at=_optional_str(payload.get("updated_at")),
+    )
+
+
+def write_runtime_metadata(repo_root: Path, metadata: RuntimeMetadata) -> RuntimeMetadata:
+    validate_run_id(metadata.run_id)
+    path = _runtime_metadata_path(repo_root, metadata.run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = asdict(
+        replace(
+            metadata,
+            pr_ref=_pr_ref(metadata.pr_number, metadata.pr_ref),
+            updated_at=datetime.now(UTC).isoformat(),
+        )
+    )
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return load_runtime_metadata(repo_root, metadata.run_id)
+
+
+def initialize_runtime_metadata(repo_root: Path, run: SelfImprovementRun) -> RuntimeMetadata:
+    return write_runtime_metadata(
+        repo_root,
+        RuntimeMetadata(
+            run_id=run.run_id,
+            runtime_name=f"self-improvement-{run.run_id}",
+            environment="staging",
+            manifest=_relative_posix(run.manifest, repo_root),
+            working_recipe=_relative_posix(run.working_recipe, repo_root),
+        ),
+    )
+
+
+def record_runtime(
     repo_root: Path,
-    config_path: Path,
-    config: SelfImprovementConfig,
+    run_id: str,
+    runtime_id: str,
+    runtime_name: str | None = None,
+    runtime_group_id: str | None = None,
+    environment: str | None = None,
+) -> RuntimeMetadata:
+    metadata = load_runtime_metadata(repo_root, run_id)
+    return write_runtime_metadata(
+        repo_root,
+        replace(
+            metadata,
+            runtime_id=runtime_id,
+            runtime_name=runtime_name or metadata.runtime_name,
+            runtime_group_id=runtime_group_id or metadata.runtime_group_id,
+            environment=environment or metadata.environment,
+        ),
+    )
+
+
+def record_pr(
+    repo_root: Path,
+    run_id: str,
+    pr_number: int,
+    pr_branch: str,
+    pr_url: str | None = None,
+) -> RuntimeMetadata:
+    if pr_number < 1:
+        raise ValueError(f"pr_number must be >= 1, got {pr_number}")
+    metadata = load_runtime_metadata(repo_root, run_id)
+    return write_runtime_metadata(
+        repo_root,
+        replace(
+            metadata,
+            pr_number=pr_number,
+            pr_ref=f"pr/{pr_number}",
+            pr_branch=pr_branch,
+            pr_url=pr_url,
+        ),
+    )
+
+
+def record_pr_branch(repo_root: Path, run_id: str, pr_branch: str) -> RuntimeMetadata:
+    metadata = load_runtime_metadata(repo_root, run_id)
+    return write_runtime_metadata(
+        repo_root,
+        replace(
+            metadata,
+            pr_branch=pr_branch,
+        ),
+    )
+
+
+def record_bootstrap_commit(
+    repo_root: Path,
+    run_id: str,
+    bootstrap_commit: str,
+) -> RuntimeMetadata:
+    metadata = load_runtime_metadata(repo_root, run_id)
+    return write_runtime_metadata(
+        repo_root,
+        replace(
+            metadata,
+            bootstrap_commit=bootstrap_commit,
+        ),
+    )
+
+
+def record_candidate(
+    repo_root: Path,
+    run_id: str,
+    candidate_commit: str,
+    candidate_version_id: str | None = None,
+) -> RuntimeMetadata:
+    metadata = load_runtime_metadata(repo_root, run_id)
+    return write_runtime_metadata(
+        repo_root,
+        replace(
+            metadata,
+            candidate_commit=candidate_commit,
+            candidate_version_id=candidate_version_id,
+        ),
+    )
+
+
+def candidate_commit_paths(repo_root: Path, run_id: str) -> tuple[str, ...]:
+    metadata = load_runtime_metadata(repo_root, run_id)
+    return (
+        _relative_posix(repo_root / metadata.working_recipe, repo_root),
+        _relative_posix(repo_root / metadata.manifest, repo_root),
+    )
+
+
+def runner_config_with_runtime_metadata(
+    repo_root: Path,
     run_id: str,
     runner_config: RunnerConfig,
-) -> SelfImprovementStartResult:
-    run = bootstrap_run(repo_root, config_path, config, run_id)
-    train_dir = run_epoch_split(
-        repo_root=repo_root,
-        config=config,
-        run_id=run_id,
-        epoch=0,
-        split_kind="train",
-        runner_config=runner_config,
-    )
-    test_dir = run_epoch_split(
-        repo_root=repo_root,
-        config=config,
-        run_id=run_id,
-        epoch=0,
-        split_kind="test",
-        runner_config=runner_config,
-    )
-    metrics = refresh_metrics(repo_root, run_id)
-    best_candidate = update_best_candidate(repo_root, run_id)
-    return SelfImprovementStartResult(
-        run=run,
-        train_dir=train_dir,
-        test_dir=test_dir,
-        metrics=metrics,
-        best_candidate=best_candidate,
+) -> RunnerConfig:
+    metadata = load_runtime_metadata(repo_root, run_id)
+    runtime_id = runner_config.runtime_id or metadata.runtime_id
+    if runtime_id is None:
+        raise ValueError(
+            f"runtime id is required for self-improvement run {run_id}. "
+            f"Record it in {_runtime_metadata_path(repo_root, run_id)} or pass --runtime-id."
+        )
+    return replace(
+        runner_config,
+        runtime_name=metadata.runtime_name,
+        runtime_id=runtime_id,
+        environment=runner_config.environment or metadata.environment,
     )
 
 
@@ -365,6 +511,22 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"{path} must contain a JSON object")
     return payload
+
+
+def _runtime_metadata_path(repo_root: Path, run_id: str) -> Path:
+    return repo_root / "results" / "self-improvement" / run_id / "metadata" / "runtime.json"
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _pr_ref(pr_number: int | None, existing: str | None) -> str | None:
+    if pr_number is None:
+        return existing
+    return f"pr/{pr_number}"
 
 
 def _metric_row(epoch: int, train: dict[str, Any], test: dict[str, Any] | None) -> dict[str, Any]:

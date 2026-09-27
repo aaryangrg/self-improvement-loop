@@ -36,10 +36,15 @@ runtime:
 4. Commit the new run copy and manifest so Introspection can create the runtime
    identity from a clean Git state.
 5. Create the runtime once with `introspection runtimes create --manifest ...`.
-6. Use `introspection dev --runtime <runtime-id> --as <run-id>` for fast
-   iteration against cloud development without committing every epoch.
-7. Track epochs through the run ledger, patches, experiment results, and final
+6. Open a pull request for epoch edits and let Introspection build staging
+   candidate versions from the PR ref.
+7. Evaluate candidate versions through staging or exact runtime version ids.
+8. Track epochs through the run ledger, result artifacts, candidate refs, and final
    candidate state.
+
+`introspection dev` would be the ideal fast local-edit loop if available, but
+it is not part of the current working plan because we could not get the cloud
+development attachment to start reliably. See [Development Lane Finding](#development-lane-finding).
 
 ## Rationale
 
@@ -70,18 +75,37 @@ and lineage are more important than minimizing repository noise.
 Introspection runtime creation pins a Git-backed recipe state, so creating a new
 runtime identity requires a clean committed run copy and manifest.
 
-After the runtime exists, `introspection dev` can serve saved local edits from
-the working recipe to cloud development tasks. That lets an improvement loop run
-many epochs without committing each epoch.
+The first runtime for a new self-improvement manifest should be bootstrapped
+from `main`. After that runtime group exists, Introspection can follow staged
+candidate refs such as `pr/N`. That makes the practical iteration boundary:
 
-Commits should therefore be used for:
+- commit the initial run recipe and manifest to `main` so the runtime group can
+  be created,
+- create a PR branch for epoch edits,
+- commit each candidate epoch state on that PR branch,
+- pin or select staging candidate versions built from `pr/N`,
+- promote or merge only useful candidates.
 
-- bootstrapping a new self-improvement run,
-- promising checkpoints,
-- final candidates,
-- PRs that promote a run's final state.
+This is noisier than a live dev loop, but it avoids committing failed or
+regressive epochs directly to `main`.
 
-They are not required for every experimental epoch.
+## Development Lane Finding
+
+We investigated `introspection dev` as a way to serve uncommitted local recipe
+edits into cloud development tasks. In our environment it did not work reliably:
+
+- `introspection dev --runtime legal-agent --as self-improvement-dev --logs debug`
+  exited successfully with no output and did not stay attached.
+- The same behavior happened with runtime-name and runtime-id forms, from the
+  repo root and from the recipe directory.
+- Creating a development task against a ready runtime id failed with a 500
+  response from the runtime run endpoint.
+- The same runtime worked in staging and returned `RUN_FINISHED`.
+
+So the current assumption is that the runtime image and recipe are healthy, but
+the development attachment path is unavailable or not enabled for this project.
+If Introspection support resolves this, we can replace the PR-backed epoch loop
+with a faster dev-lane loop.
 
 ## Epoch Tracking
 
@@ -96,9 +120,8 @@ Each epoch should record enough provenance to understand what was tried:
   "seed": "self-improvement-run-001",
   "recipe_path": "recipes/self-improvement/run-001/legal-agent",
   "runtime_id": "...",
-  "dev_target": "self-improvement-run-001",
-  "dirty": true,
-  "patch_file": "epochs/epoch-003/patch.diff",
+  "candidate_ref": "pr/12",
+  "candidate_commit": "...",
   "experiment_run_id": "...",
   "hypothesis": "...",
   "decision": "keep"

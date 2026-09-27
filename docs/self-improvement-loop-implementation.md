@@ -28,7 +28,8 @@ bootstrap self-improvement run
   create .introspection/<run-id>.yaml
   commit bootstrap state
   create one Introspection runtime for the run
-  start/use introspection dev for live development
+  open/use a PR branch for epoch candidates
+  evaluate candidate versions through staging or exact runtime version ids
 
 epoch 000
   run train split
@@ -41,6 +42,8 @@ epochs 001..N
   enforce edit allowlist
   invoke fresh verifier
   ask same researcher session to revise if verifier fails
+  commit candidate epoch edits on the PR branch
+  wait for/select the Introspection candidate version
   run train split with updated working recipe
   optionally run held-out test split privately
   update journal, experiment records, and metrics
@@ -276,17 +279,19 @@ guardrail and should run even when the verifier is disabled.
 
 ## Checkpointing And PRs
 
-The loop does not need to commit every epoch.
+The loop should not commit every epoch to `main`. With the dev lane currently
+unavailable, candidate epochs do need Git-backed states so Introspection can
+build and evaluate them. Those commits should live on a PR branch for the
+self-improvement run.
 
-Instead, it should checkpoint promising recipe states. Best-candidate state is
-an explicit orchestration decision after an epoch has completed and metrics have
-been refreshed:
+Best-candidate state is still an explicit orchestration decision after an epoch
+has completed and metrics have been refreshed:
 
 ```text
 refresh metrics
 explicitly update best_candidate.json
 if best_candidate.is_new_best and best_candidate.best_epoch > 0:
-  create or prepare checkpoint/PR before the next researcher invocation
+  update checkpoint/PR metadata before the next researcher invocation
 continue the next epoch from the current working recipe
 ```
 
@@ -306,7 +311,23 @@ The PR should describe:
 - known failures or reliability issues.
 
 This creates durable candidate states without turning every experiment into a
-commit.
+mainline commit.
+
+## Runtime Version Model
+
+The current working model is:
+
+1. Bootstrap a new run recipe and manifest on `main`.
+2. Create the first Introspection runtime from that committed manifest.
+3. Create a PR branch for the run's epoch edits.
+4. Commit each candidate epoch state on the PR branch.
+5. Let Introspection build candidate versions from the PR ref.
+6. Evaluate train/test against staging or an exact candidate runtime version.
+7. Merge or promote only selected checkpoints.
+
+We originally planned to use `introspection dev` for live local iteration, but
+it is not currently working for this project. The observed behavior is captured
+in `docs/self-improvement-run-model.md#development-lane-finding`.
 
 ## Metrics To Track
 
@@ -370,19 +391,17 @@ Changes:
    Example fields:
 
    ```yaml
-   id: run-001
+   id: baseline
    seed_recipe: recipes/legal-agent
-   working_recipe: recipes/self-improvement/run-001/legal-agent
-   manifest: .introspection/self-improvement-run-001.yaml
    split_config: experiment_configs/baseline_split.yaml
-   max_epochs: 10
-   test_every: 3
+   loop:
+     max_epochs: 10
+     test_every: 3
    researcher:
      epoch_session_mode: fresh
    verifier:
      enabled: true
      max_revision_attempts: 2
-     block_on_fail: true
    ```
 
 2. Add a bootstrap command.
@@ -395,36 +414,38 @@ Changes:
    - create `workspace/`, `epochs/`, `test/`, and `references/`,
    - copy or snapshot the seed recipe under `references/baseline_recipe/`,
    - initialize `workspace/journal.md`, `hypotheses.md`, `experiments.md`, and
-     `current_plan.md`.
+     `current_plan.md`,
+   - initialize `metadata/runtime.json`.
 
-   This is a low-level setup command. The normal V1 entrypoint is `start`.
+   This is the setup command for a new run.
 
-3. Add a start command.
+3. Add runtime and PR metadata commands.
 
    Responsibilities:
 
-   - bootstrap a fresh run,
-   - run epoch 0 train,
-   - always run epoch 0 held-out test,
-   - refresh metrics,
-   - explicitly update `best_candidate.json`.
+   - create or record the Introspection runtime id,
+   - record the PR branch and `pr/N` ref,
+   - pin staging to the PR ref,
+   - record candidate commit/version ids when available.
 
-   V1 does not need first-class resume support. If `start` is interrupted or a
-   run id already exists, use the lower-level commands intentionally rather than
-   having the orchestrator infer partial state.
+   V1 does not need first-class resume support. If a step is interrupted, use
+   the explicit metadata commands intentionally rather than having the
+   orchestrator infer partial state.
 
    Example:
 
    ```bash
-   uv run python -m runner self-improve start \
-     --config self-improvement-configs/baseline.yaml \
-     --runtime-id <runtime-id>
+   uv run python -m runner self-improve create-runtime --run-id run-001
+   uv run python -m runner self-improve record-pr \
+     --run-id run-001 \
+     --pr-number 12 \
+     --branch self-improvement/run-001
+   uv run python -m runner self-improve pin-staging-pr --run-id run-001
    ```
 
-   If `--run-id` is omitted, `start` generates a timestamp-based id. A provided
-   `--run-id` is treated as an explicit override. In both cases, bootstrap
-   checks for pre-existing recipe, manifest, and results paths before creating
-   the run.
+   Candidate epoch commits need to be pushed during the run so Introspection
+   can build and evaluate them. Best checkpoint or final promotion commits can
+   still be pushed or merged at the end of the overall run.
 
 4. Extend the runner to write experiment output into a caller-supplied directory.
 
@@ -656,12 +677,14 @@ Smoke sequence:
 1. Bootstrap `run-001` from `recipes/legal-agent`.
 2. Commit bootstrap state if creating a runtime identity.
 3. Create or select the self-improvement runtime.
-4. Start `introspection dev` for the run runtime.
-5. Run `epoch-000` train on `smoke_split`.
+4. Open a PR branch for epoch candidates.
+5. Run `epoch-000` train and test on `smoke_split`.
 6. Verify metrics and directory layout.
 7. Run researcher in dry-run or constrained mode.
 8. Verify allowlist enforcement.
 9. Run verifier on a known safe edit.
 10. Run verifier on a deliberately sample-specific edit.
-11. Run `epoch-001` train after a small benign recipe edit.
-12. Confirm metrics graph inputs update correctly.
+11. Commit a small benign candidate recipe edit on the PR branch.
+12. Wait for or select the Introspection candidate version.
+13. Run `epoch-001` train.
+14. Confirm metrics graph inputs update correctly.

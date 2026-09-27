@@ -78,6 +78,20 @@ class IntrospectionClient:
     def get_file(self, file_id: str) -> Any:
         return self._json(["files", "get", file_id], timeout=120)
 
+    def create_runtime(self, manifest: Path) -> Any:
+        return self._json(
+            ["runtimes", "create", "--manifest", str(manifest)],
+            timeout=1800,
+            retries=0,
+        )
+
+    def pin_runtime_branch(self, runtime_id: str, branch: str) -> Any:
+        return self._json(
+            ["runtimes", "pin", runtime_id, "--branch", branch],
+            timeout=300,
+            retries=0,
+        )
+
     def create_task(
         self,
         runtime_name: str,
