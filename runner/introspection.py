@@ -80,7 +80,7 @@ class IntrospectionClient:
 
     def create_runtime(self, manifest: Path) -> Any:
         return self._json(
-            ["runtimes", "create", "--manifest", str(manifest)],
+            ["runtimes", "create", "--manifest", str(manifest), "--yes"],
             timeout=1800,
             retries=0,
         )
