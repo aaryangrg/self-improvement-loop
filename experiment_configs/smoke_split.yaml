@@ -4,11 +4,13 @@ description: Minimal split for debugging runner, upload, task execution, artifac
 defaults:
   trials_per_task: 1
   task_concurrency: 3
-  eval_concurrency: 5
+  eval_concurrency: 1
 
 splits:
   train:
     task_ids:
-      - corporate-ma/compare-matter-plan-against-engagement-letter
+      - trusts-estates-private-client/compare-trust-documents-against-client-instructions
+      - litigation-dispute-resolution/identify-issues-in-counterparty-complaint
   test:
-    task_ids: []
+    task_ids:
+      - employment-labor/identify-issues-in-counterparty-motion-brief

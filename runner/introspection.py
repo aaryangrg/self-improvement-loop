@@ -92,6 +92,21 @@ class IntrospectionClient:
             retries=0,
         )
 
+    def pin_runtime_version(self, runtime_id: str) -> Any:
+        return self._json(["runtimes", "pin", runtime_id, "--yes"], retries=0)
+
+    def list_runtime_versions(self, runtime_id: str) -> list[dict[str, Any]]:
+        payload = self._json(["runtimes", "versions", runtime_id])
+        if not isinstance(payload, list):
+            raise ValueError("runtime versions response must be a list")
+        return [item for item in payload if isinstance(item, dict)]
+
+    def get_recipe(self, recipe_id: str) -> dict[str, Any]:
+        payload = self._json(["recipes", "get", recipe_id])
+        if not isinstance(payload, dict):
+            raise ValueError("recipe response must be an object")
+        return payload
+
     def create_task(
         self,
         runtime_name: str,

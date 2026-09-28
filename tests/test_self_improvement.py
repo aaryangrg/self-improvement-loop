@@ -24,6 +24,29 @@ from runner.self_improvement import (
 
 
 class SelfImprovementBootstrapTest(unittest.TestCase):
+    def test_researcher_and_verifier_models_are_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            base = (
+                "id: smoke\n"
+                "seed_recipe: recipes/legal-agent\n"
+                "split_config: experiment_configs/smoke_split.yaml\n"
+                "evaluation:\n"
+                "  judges: [gpt-6-sol]\n"
+            )
+            for roles, missing in (
+                ("researcher: {}\nverifier:\n  model: gpt-6-sol\n", "researcher.model"),
+                ("researcher:\n  model: gpt-6-sol\nverifier: {}\n", "verifier.model"),
+                (
+                    "researcher:\n  model: '  '\nverifier:\n  model: gpt-6-sol\n",
+                    "researcher.model",
+                ),
+            ):
+                with self.subTest(missing=missing):
+                    config_path.write_text(base + roles, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, missing.replace(".", r"\.")):
+                        load_self_improvement_config(config_path)
+
     def test_generate_run_id_uses_utc_timestamp_with_microseconds(self) -> None:
         run_id = generate_run_id(datetime(2026, 9, 27, 9, 5, 12, 345678, tzinfo=UTC))
 
@@ -53,9 +76,14 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                         "loop:",
                         "  max_epochs: 2",
                         "  test_every: 1",
+                        "evaluation:",
+                        "  judges: [gpt-6-sol]",
+                        "  parallel: 1",
                         "researcher:",
+                        "  model: gpt-6-sol",
                         "  epoch_session_mode: fresh",
                         "verifier:",
+                        "  model: gpt-6-sol",
                         "  enabled: true",
                         "  max_revision_attempts: 2",
                     ]
@@ -65,9 +93,16 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
             )
 
             config = load_self_improvement_config(config_path)
+            self.assertEqual(config.researcher.model, "gpt-6-sol")
+            self.assertEqual(config.verifier.model, "gpt-6-sol")
             run = bootstrap_run(repo_root, config_path, config, "run-001")
 
             self.assertEqual(run.run_id, "run-001")
+            stored_config = json.loads(
+                (run.results_dir / "metadata" / "run.json").read_text(encoding="utf-8")
+            )["config"]
+            self.assertEqual(stored_config["researcher"]["model"], "gpt-6-sol")
+            self.assertEqual(stored_config["verifier"]["model"], "gpt-6-sol")
             self.assertEqual(
                 run.working_recipe,
                 repo_root / "recipes" / "self-improvement" / "run-001" / "legal-agent",
@@ -95,9 +130,9 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
             self.assertTrue((run.results_dir / "epochs").is_dir())
             self.assertTrue((run.results_dir / "test").is_dir())
             self.assertEqual(
-                (
-                    run.results_dir / "references" / "baseline_recipe" / "SYSTEM.md"
-                ).read_text(encoding="utf-8"),
+                (run.results_dir / "references" / "baseline_recipe" / "SYSTEM.md").read_text(
+                    encoding="utf-8"
+                ),
                 "baseline system\n",
             )
             self.assertTrue((run.results_dir / "metadata" / "run.json").exists())
@@ -131,6 +166,13 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                         "id: smoke",
                         "seed_recipe: recipes/legal-agent",
                         "split_config: experiment_configs/smoke_split.yaml",
+                        "evaluation:",
+                        "  judges: [gpt-6-sol]",
+                        "  parallel: 1",
+                        "researcher:",
+                        "  model: gpt-6-sol",
+                        "verifier:",
+                        "  model: gpt-6-sol",
                     ]
                 )
                 + "\n",
@@ -188,6 +230,13 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                         "id: smoke",
                         "seed_recipe: recipes/legal-agent",
                         "split_config: experiment_configs/smoke_split.yaml",
+                        "evaluation:",
+                        "  judges: [gpt-6-sol]",
+                        "  parallel: 1",
+                        "researcher:",
+                        "  model: gpt-6-sol",
+                        "verifier:",
+                        "  model: gpt-6-sol",
                     ]
                 )
                 + "\n",
@@ -245,6 +294,33 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
             self.assertEqual(test_call.kwargs["experiment_run_id"], "epoch-003")
             self.assertFalse(train_call.kwargs["include_split_subdir"])
             self.assertFalse(test_call.kwargs["include_split_subdir"])
+            self.assertEqual(train_call.kwargs["runner_config"].eval_judges, ("gpt-6-sol",))
+            self.assertEqual(train_call.kwargs["runner_config"].eval_parallel, 1)
+            self.assertEqual(
+                json.loads(
+                    (
+                        repo_root
+                        / "results"
+                        / "self-improvement"
+                        / "run-001"
+                        / "metadata"
+                        / "evaluation.json"
+                    ).read_text(encoding="utf-8")
+                ),
+                {"judges": ["gpt-6-sol"], "parallel": 1},
+            )
+
+            changed_config = config_path.read_text(encoding="utf-8").replace("gpt-6-sol", "gpt-4.1")
+            config_path.write_text(changed_config, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "differs from the pinned settings"):
+                run_epoch_split(
+                    repo_root=repo_root,
+                    config=load_self_improvement_config(config_path),
+                    run_id="run-001",
+                    epoch=4,
+                    split_kind="train",
+                    runner_config=runner_config,
+                )
 
     def test_refresh_metrics_combines_train_and_optional_test_epoch_aggregates(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

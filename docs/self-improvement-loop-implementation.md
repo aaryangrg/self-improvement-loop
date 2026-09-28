@@ -140,6 +140,7 @@ Researcher invocation should support two epoch-level modes:
 
 ```yaml
 researcher:
+  model: gpt-6-sol
   epoch_session_mode: fresh  # fresh | resume
 ```
 
@@ -244,6 +245,7 @@ Suggested config:
 
 ```yaml
 verifier:
+  model: gpt-6-sol
   enabled: true
   max_revision_attempts: 2
   block_on_fail: true
@@ -331,6 +333,11 @@ in `docs/self-improvement-run-model.md#development-lane-finding`.
 
 ## Metrics To Track
 
+The future run UI should show each epoch's in-flight task count, evaluations in
+progress, scored trials, and failed trials. Persist explicit per-trial phase
+updates when building that view; aggregate scores alone cannot show work still
+running.
+
 Core V1 metrics:
 
 - train task pass rate,
@@ -398,8 +405,10 @@ Changes:
      max_epochs: 10
      test_every: 3
    researcher:
+     model: gpt-6-sol
      epoch_session_mode: fresh
    verifier:
+     model: gpt-6-sol
      enabled: true
      max_revision_attempts: 2
    ```
@@ -520,44 +529,38 @@ Changes:
    recipe path, runtime id, whether this check found a new best, and whether a
    checkpoint/PR has been created.
 
-9. Add mechanical researcher edit validation.
-
-   Before Codex automation, implement the allowlist check as a standalone
-   utility/command:
-
-   ```text
-   allowed writes:
-     recipes/self-improvement/<run-id>/legal-agent/**
-     results/self-improvement/<run-id>/workspace/**
-   ```
-
-   This should reject edits to baseline recipe, Harvey LAB, runner code,
-   experiment configs, `.introspection`, prior epoch results, and held-out test
-   artifacts.
+9. Restrict researcher writes to the staged candidate recipe and research notes, and
+   reject the entire result if the post-run path audit finds any other change.
 
 ### Phase 2: Researcher And Verifier Invocation
 
-Goal: invoke Codex against the prepared artifacts with strict boundaries, but
-keep prompts and skills simple enough to iterate.
+V1 invokes Codex against a staged candidate recipe and original train evidence. The
+researcher prompt and skills are deliberately small and expected to evolve.
 
 Changes:
 
 1. Add researcher workspace preparation.
 
-   The researcher should receive:
+   The researcher receives a separate sandbox under
+   `metadata/researcher/epoch-XXX/sandbox/` containing:
 
-   - path to the working recipe,
-   - read/write access to `workspace/`,
-   - read-only access to `epochs/`,
-   - read-only access to `references/`,
-   - no access to `test/`.
+   - a copy of the current working recipe at `recipe/`,
+   - researcher-only instructions and skills.
+
+   The Codex permission profile grants read-only access to the original
+   `epochs/` and `references/baseline_recipe/`, including train `scores.json`
+   feedback, and write access to the original research `workspace/` and staged
+   `recipe/`. It denies all other repository paths (apart from minimal system
+   paths) and disables network access for agent commands. Held-out test data and
+   Harvey source task criteria remain outside the allowed paths. The parent
+   runner validates edits and promotes the candidate after verifier approval.
 
 2. Add researcher JSON schema.
 
    Capture structured final output as:
 
    ```text
-   results/self-improvement/<run-id>/epochs/epoch-XXX/researcher_result.json
+   results/self-improvement/<run-id>/metadata/researcher/epoch-XXX/researcher_result.json
    ```
 
 3. Add verifier JSON schema.
@@ -565,20 +568,41 @@ Changes:
    Capture structured final output as:
 
    ```text
-   results/self-improvement/<run-id>/epochs/epoch-XXX/verifier_result.json
+   results/self-improvement/<run-id>/metadata/researcher/epoch-XXX/verifier/attempt-YYY/verifier_result.json
    ```
 
-4. Add researcher invocation command.
+4. Add researcher invocation command. V1 supports a fresh Codex session per
+   invocation; a persistent session across epochs is future work.
+
+   The researcher uses the existing `CODEX_HOME` for `codex login` credentials,
+   including ChatGPT login, and an isolated `HOME`. It ignores user config and
+   does not forward `OPENAI_API_KEY` to Codex or child commands. Global
+   `CODEX_HOME` instructions and skills may still be discovered; the
+   researcher-specific instructions and skills are copied only into its
+   prepared workspace. The `codex exec` tool sandbox enforces the filesystem
+   profile. Research notes are written directly; candidate recipe edits remain
+   staged until verifier approval and promotion.
+
+   The `codex sandbox` debug path failed with `unbound variable: TIOCSTI` on
+   this macOS 14.2.1 host, so the separate probe command was removed. A real
+   `codex exec` smoke run on this host confirmed an allowed read and write,
+   and denied a read outside the workspace and a write to a read-only folder.
+   A second smoke run with the direct-directory layout read train `scores.json`
+   and wrote to the original research notes folder, while denying a write to
+   train `epochs/` and a read from held-out `test/`.
+   The CLI permission overrides must pass filesystem rules as one TOML inline
+   table; quoted dotted path keys are rejected by Codex CLI 0.157.1.
 
    It should support:
 
    ```yaml
    researcher:
+     model: gpt-6-sol
      epoch_session_mode: fresh  # fresh | resume
    ```
 
-   Within one epoch, verifier feedback should resume the same researcher
-   session for revisions.
+   The first invocation persists its Codex session so verifier feedback can
+   resume it within the epoch. Separate epochs still start fresh sessions.
 
 5. Add verifier invocation command.
 
@@ -606,13 +630,13 @@ Changes:
    maximum and prepare or create a checkpoint branch/commit/PR according to
    config.
 
-### Phase 3: Prompts And Skills
+### Phase 3: Verifier, Prompts, And Skills
 
 Goal: improve the quality and safety of researcher/verifier behavior.
 
 Changes:
 
-1. Create a `self-improvement-research` Codex skill.
+1. Iterate on the initial `self-improvement-research` Codex skill.
 
    It should describe:
 
@@ -623,7 +647,7 @@ Changes:
    - how to avoid sample-specific overfitting,
    - how to make small general recipe changes.
 
-2. Create or adapt an Introspection recipe-editing skill.
+2. Iterate on the initial Introspection recipe-editing skill.
 
    It should cover:
 

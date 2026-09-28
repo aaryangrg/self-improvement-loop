@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import traceback
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,6 +67,10 @@ class TaskSummary:
     rubric_pass_rate: float | None
     trial_summary_files: tuple[str, ...]
     score_files: tuple[str, ...]
+
+
+class IncompleteExperimentError(RuntimeError):
+    pass
 
 
 def load_split_config(path: Path) -> SplitConfig:
@@ -158,6 +162,11 @@ def run_experiment(
             "environment": runner_config.environment,
             "agent": runner_config.agent,
         },
+        "evaluation": {
+            "judges": list(runner_config.eval_judges),
+            "parallel": runner_config.eval_parallel,
+            "enabled": runner_config.enable_eval,
+        },
         "defaults": asdict(split_config.defaults),
     }
     _write_json(run_dir / "run.json", run_metadata)
@@ -169,43 +178,51 @@ def run_experiment(
     ]
 
     trial_results: list[TrialResult] = []
-    completed_trial_dirs: list[tuple[str, int, Path]] = []
     task_config = replace(runner_config, results_root=split_dir, enable_eval=False)
-    with ThreadPoolExecutor(max_workers=split_config.defaults.task_concurrency) as executor:
-        task_futures: dict[Future[tuple[str, int, Path] | TrialResult], tuple[str, int]] = {
-            executor.submit(_run_trial_without_eval, task_id, trial, task_config): (task_id, trial)
+    eval_config = replace(runner_config, results_root=split_dir)
+    with (
+        ThreadPoolExecutor(max_workers=split_config.defaults.task_concurrency) as task_pool,
+        ThreadPoolExecutor(max_workers=split_config.defaults.eval_concurrency) as eval_pool,
+    ):
+        pending: dict[Future[Any], str] = {
+            task_pool.submit(_run_trial_without_eval, task_id, trial, task_config): "task"
             for task_id, trial in jobs
         }
-        for task_future in as_completed(task_futures):
-            result = task_future.result()
-            if isinstance(result, TrialResult):
-                trial_results.append(result)
-            else:
-                completed_trial_dirs.append(result)
-            _write_json(split_dir / "aggregate.json", build_aggregate(run_id, split, trial_results))
-
-    if runner_config.enable_eval and completed_trial_dirs:
-        eval_config = replace(runner_config, results_root=split_dir)
-        with ThreadPoolExecutor(max_workers=split_config.defaults.eval_concurrency) as executor:
-            eval_futures: dict[Future[TrialResult], tuple[str, int]] = {
-                executor.submit(_evaluate_trial, task_id, trial, trial_dir, eval_config): (
-                    task_id,
-                    trial,
-                )
-                for task_id, trial, trial_dir in completed_trial_dirs
-            }
-            for eval_future in as_completed(eval_futures):
-                trial_results.append(eval_future.result())
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                phase = pending.pop(future)
+                result = future.result()
+                if phase == "task" and not isinstance(result, TrialResult):
+                    task_id, trial, trial_dir = result
+                    if runner_config.enable_eval:
+                        pending[
+                            eval_pool.submit(
+                                _evaluate_trial, task_id, trial, trial_dir, eval_config
+                            )
+                        ] = "eval"
+                    else:
+                        trial_results.append(_trial_result_from_dir(task_id, trial, trial_dir))
+                else:
+                    trial_results.append(result)
                 _write_json(
                     split_dir / "aggregate.json", build_aggregate(run_id, split, trial_results)
                 )
-    else:
-        for task_id, trial, trial_dir in completed_trial_dirs:
-            trial_results.append(_trial_result_from_dir(task_id, trial, trial_dir))
 
     aggregate = build_aggregate(run_id, split, trial_results)
     aggregate["finished_at"] = datetime.now(UTC).isoformat()
     _write_json(split_dir / "aggregate.json", aggregate)
+    if runner_config.enable_eval and (
+        not jobs
+        or aggregate["number_of_scored_trials"] != len(jobs)
+        or aggregate["number_of_evaluated_tasks"] != len(split_config.splits[split].task_ids)
+    ):
+        raise IncompleteExperimentError(
+            f"{split} incomplete: {aggregate['number_of_scored_trials']}/{len(jobs)} trials "
+            f"scored, {aggregate['number_of_evaluated_tasks']}/"
+            f"{len(split_config.splits[split].task_ids)} tasks evaluated. "
+            f"Results: {split_dir / 'aggregate.json'}"
+        )
     return run_dir
 
 
@@ -222,6 +239,9 @@ def _run_trial_without_eval(
     try:
         resolved_task_id = load_task(config, task_id).task_id
         trial_dir = run_one(task_id, trial, config)
+        outputs_dir = trial_dir / "outputs"
+        if not any(path.is_file() for path in outputs_dir.rglob("*")):
+            return _trial_result_from_dir(resolved_task_id, trial, trial_dir)
         return resolved_task_id, trial, trial_dir
     except Exception as error:
         trial_dir = _fallback_trial_dir(task_id, trial, config)

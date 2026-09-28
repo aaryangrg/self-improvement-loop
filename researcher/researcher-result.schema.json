@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "hypothesis", "changes", "next_experiment"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ready_for_review", "no_change"]
+    },
+    "summary": {"type": "string"},
+    "hypothesis": {"type": "string"},
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "reason"],
+        "properties": {
+          "path": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "next_experiment": {"type": "string"}
+  }
+}

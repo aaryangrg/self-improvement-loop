@@ -8,12 +8,15 @@ Initial bridge for running Harvey LAB tasks against an Introspection legal-agent
 uv sync
 git submodule update --init --recursive
 nvm use
+npm ci
 ```
 
 ## External Prerequisites
 
 Python dependencies are managed by `uv` and pinned to Python 3.13 via `.python-version`.
 Node is pinned to 24 via `.nvmrc` because the Introspection CLI requires Node 24+.
+The root npm lockfile also installs the exact Codex CLI version used by the
+self-improvement researcher.
 
 The Introspection CLI is an external Node/npm tool, not a Python package:
 
@@ -172,7 +175,14 @@ defaults:
 `task_concurrency` controls concurrent Introspection task execution and artifact
 download. `eval_concurrency` controls how many completed trials are sent through
 Harvey evaluation at once. The CLI `--eval-parallel` flag is still passed through
-to Harvey's evaluator for within-evaluation judge parallelism.
+to Harvey's evaluator for within-evaluation judge parallelism. Evaluation starts
+as soon as each trial finishes; it does not wait for every agent task in the split.
+
+Generic `run-experiment` accepts `--eval-judges gpt-6-sol`. Self-improvement
+runs instead take judges from the `evaluation` section of their config, currently
+GPT-6 Sol in both supplied configs. The runner pins those settings under
+`metadata/evaluation.json` and rejects changes within the same run. A small
+compatibility wrapper supplies this model's Responses API parameters.
 
 Trial summaries use `scored` as the gate for aggregate calculations. Failed or
 unscored trials still keep any conversation, task metadata, partial outputs, and
@@ -180,6 +190,10 @@ error files the runner could recover, but they do not enter task or split pass
 rate calculations. Aggregates report both `number_of_scored_trials` and
 `number_of_failed_trials`, plus task coverage fields:
 `number_of_evaluated_tasks` and `number_of_unevaluated_tasks`.
+The command exits nonzero if any expected trial remains unscored or any task is
+unevaluated; `aggregate.json` and recovered trial files remain available for
+diagnosis. A failed root agent span in the Introspection trace also marks the
+trial as failed, even when the platform reports the run as completed.
 
 ## Start A Self-Improvement Run
 
@@ -319,6 +333,63 @@ uv run python -m runner self-improve update-best-candidate --run-id run-001
 ```
 
 That writes `results/self-improvement/run-001/metadata/best_candidate.json`.
+
+## Codex Researcher
+
+Start an end-to-end self-improvement run from a clean `main` worktree:
+
+```bash
+uv run python -m runner self-improve start --config self-improvement-configs/smoke.yaml
+```
+
+`--run-id` is optional. The command bootstraps and pushes the run's recipe,
+creates its runtime, evaluates epoch 0 on train and test, and then runs the
+configured research epochs. Each candidate passes a fresh read-only verifier;
+rejections return to the same researcher session up to the configured revision
+limit. Approved edits are promoted, committed on the run's PR branch, matched
+to a ready Introspection version by Git SHA, and evaluated. Test runs occur at
+the configured cadence and on the final epoch. Results live under
+`results/self-improvement/<run-id>/`. A failure stops the loop with its files
+available for inspection; automatic resume is not implemented.
+
+The researcher can also be invoked separately after a train epoch completes. It reads
+the original train epoch results, including Harvey `scores.json` feedback, and
+the original baseline recipe. It writes research notes directly under the run's
+`workspace/`. Only the candidate recipe is copied into
+`results/self-improvement/<run-id>/metadata/researcher/epoch-XXX/sandbox/recipe/`.
+Held-out test results and the Harvey source task criteria are not accessible.
+A JSON Schema validates the final report, while `events.jsonl` preserves
+Codex's event stream. Manual `verify` and `promote` commands are available for
+inspecting one candidate outside the full loop.
+
+Prepare the workspace, then invoke the researcher:
+
+```bash
+uv run python -m runner self-improve prepare-researcher --run-id run-001 --epoch 1
+uv run python -m runner self-improve research --run-id run-001 --epoch 1
+uv run python -m runner self-improve verify --run-id run-001 --epoch 1
+uv run python -m runner self-improve promote --run-id run-001 --epoch 1
+```
+
+The researcher and verifier models are required in the self-improvement config
+and pinned in the run metadata at bootstrap. Neither role falls back to your
+personal Codex model setting.
+
+The subprocess reuses the existing `codex login` credentials in `CODEX_HOME`,
+including ChatGPT login; it does not require or pass `OPENAI_API_KEY`. It ignores
+user Codex configuration and uses an isolated `HOME`, but global instructions
+and skills in `CODEX_HOME` may still be discovered. The researcher-only
+`AGENTS.md` and skills are copied into its prepared workspace; they are not
+installed at the repository root.
+
+The pinned CLI's actual `codex exec` path was smoke-tested with this profile:
+allowed reads and writes succeeded, while a read outside the permitted paths and a
+write to a read-only folder were denied. The earlier `codex sandbox` debug
+command's `TIOCSTI` failure does not affect that result. `events.jsonl` is an
+audit/debug record of researcher tool calls and failures; scoring does not
+require it.
+Each epoch can be invoked only once without explicitly inspecting and resetting
+its prepared workspace. See `docs/self-improvement-loop-implementation.md`.
 
 ## Development Verification
 

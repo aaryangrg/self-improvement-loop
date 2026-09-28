@@ -26,13 +26,21 @@ class LoopConfig:
 
 @dataclass(frozen=True)
 class ResearcherConfig:
+    model: str
     epoch_session_mode: Literal["fresh", "resume"] = "fresh"
 
 
 @dataclass(frozen=True)
 class VerifierConfig:
+    model: str
     enabled: bool = True
     max_revision_attempts: int = 2
+
+
+@dataclass(frozen=True)
+class EvaluationConfig:
+    judges: tuple[str, ...]
+    parallel: int = 1
 
 
 @dataclass(frozen=True)
@@ -42,6 +50,7 @@ class SelfImprovementConfig:
     seed_recipe: Path
     split_config: Path
     loop: LoopConfig
+    evaluation: EvaluationConfig
     researcher: ResearcherConfig
     verifier: VerifierConfig
 
@@ -91,8 +100,18 @@ def load_self_improvement_config(path: Path) -> SelfImprovementConfig:
         raise ValueError(f"{path} must contain a mapping")
 
     loop_payload = _mapping(payload.get("loop", {}), path, "loop")
+    evaluation_payload = _mapping(payload.get("evaluation"), path, "evaluation")
     researcher_payload = _mapping(payload.get("researcher", {}), path, "researcher")
     verifier_payload = _mapping(payload.get("verifier", {}), path, "verifier")
+
+    judges_payload = evaluation_payload.get("judges")
+    if (
+        not isinstance(judges_payload, list)
+        or not 1 <= len(judges_payload) <= 2
+        or not all(isinstance(judge, str) and judge.strip() for judge in judges_payload)
+        or len(set(judges_payload)) != len(judges_payload)
+    ):
+        raise ValueError(f"{path}: evaluation.judges must list one or two distinct models")
 
     epoch_session_mode = str(researcher_payload.get("epoch_session_mode", "fresh"))
     if epoch_session_mode not in {"fresh", "resume"}:
@@ -111,10 +130,16 @@ def load_self_improvement_config(path: Path) -> SelfImprovementConfig:
             max_epochs=_positive_int(loop_payload, "max_epochs", 10, path),
             test_every=_positive_int(loop_payload, "test_every", 3, path),
         ),
+        evaluation=EvaluationConfig(
+            judges=tuple(judges_payload),
+            parallel=_positive_int(evaluation_payload, "parallel", 1, path),
+        ),
         researcher=ResearcherConfig(
+            model=_required_model(researcher_payload, "researcher", path),
             epoch_session_mode=epoch_session_mode,  # type: ignore[arg-type]
         ),
         verifier=VerifierConfig(
+            model=_required_model(verifier_payload, "verifier", path),
             enabled=bool(verifier_payload.get("enabled", True)),
             max_revision_attempts=_nonnegative_int(
                 verifier_payload,
@@ -377,6 +402,12 @@ def run_epoch_split(
             "Run `self-improve bootstrap` first."
         )
 
+    _pin_evaluation_config(results_dir, config.evaluation)
+    runner_config = replace(
+        runner_config,
+        eval_judges=config.evaluation.judges,
+        eval_parallel=config.evaluation.parallel,
+    )
     parent = results_dir / ("epochs" if split_kind == "train" else "test")
     return run_experiment(
         config_path=repo_root / config.split_config,
@@ -386,6 +417,17 @@ def run_epoch_split(
         results_root=parent,
         include_split_subdir=False,
     )
+
+
+def _pin_evaluation_config(results_dir: Path, evaluation: EvaluationConfig) -> None:
+    path = results_dir / "metadata" / "evaluation.json"
+    expected = {"judges": list(evaluation.judges), "parallel": evaluation.parallel}
+    if path.exists():
+        if _load_json(path) != expected:
+            raise ValueError(f"evaluation config differs from the pinned settings in {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(expected, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def refresh_metrics(repo_root: Path, run_id: str) -> list[dict[str, Any]]:
@@ -649,6 +691,13 @@ def _mapping(payload: object, path: Path, key: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"{path}: {key} must be a mapping")
     return payload
+
+
+def _required_model(payload: dict[str, Any], role: str, path: Path) -> str:
+    model = payload.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError(f"{path}: {role}.model must be a non-empty string")
+    return model.strip()
 
 
 def _positive_int(payload: dict[str, Any], key: str, default: int, path: Path) -> int:

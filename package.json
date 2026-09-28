@@ -1,0 +1,7 @@
+{
+  "name": "self-improvement-loop-tools",
+  "private": true,
+  "devDependencies": {
+    "@openai/codex": "0.157.1"
+  }
+}

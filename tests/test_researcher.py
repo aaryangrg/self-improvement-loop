@@ -1,0 +1,339 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import tempfile
+import tomllib
+import unittest
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+from runner.researcher import (
+    build_permission_overrides,
+    changed_paths,
+    prepare_research_workspace,
+    revise_researcher,
+    run_researcher,
+    snapshot_paths,
+    validate_research_result,
+)
+from runner.self_improvement import RuntimeMetadata, write_runtime_metadata
+
+
+class ResearcherWorkspaceTest(unittest.TestCase):
+    def make_run(self, root: Path) -> Path:
+        recipe = root / "recipes" / "self-improvement" / "run-001" / "legal-agent"
+        recipe.mkdir(parents=True)
+        (recipe / "SYSTEM.md").write_text("working prompt\n", encoding="utf-8")
+        baseline = (
+            root / "results" / "self-improvement" / "run-001" / "references" / "baseline_recipe"
+        )
+        baseline.mkdir(parents=True)
+        (baseline / "SYSTEM.md").write_text("baseline prompt\n", encoding="utf-8")
+        results = root / "results" / "self-improvement" / "run-001"
+        for epoch in range(2):
+            epoch_dir = results / "epochs" / f"epoch-{epoch:03d}"
+            epoch_dir.mkdir(parents=True)
+            (epoch_dir / "aggregate.json").write_text(
+                json.dumps({"epoch": epoch, "task_pass_rate": 0.5}), encoding="utf-8"
+            )
+        task_dir = results / "epochs" / "epoch-000" / "sample-task"
+        trial_dir = task_dir / "trial-001"
+        trial_dir.mkdir(parents=True)
+        (task_dir / "task_summary.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "sample-task",
+                    "tasks_passed": 0,
+                    "tasks_evaluated": 1,
+                    "rubrics_passed": 1,
+                    "rubrics_evaluated": 2,
+                    "score_files": ["trial-001/evaluation/scores.json"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (trial_dir / "trial_summary.json").write_text(
+            json.dumps({"task_id": "sample-task", "trial": 1, "rubrics_passed": 1}),
+            encoding="utf-8",
+        )
+        (trial_dir / "conversation.json").write_text('{"messages": []}', encoding="utf-8")
+        evaluator_dir = trial_dir / "evaluation" / "gpt-6-sol"
+        evaluator_dir.mkdir(parents=True)
+        (evaluator_dir / "scores.json").write_text(
+            '{"criteria_results": ["evaluator-only criteria text"]}', encoding="utf-8"
+        )
+        (trial_dir / "evaluation.json").write_text(
+            '{"output_files": ["evaluation/gpt-6-sol/scores.json"]}', encoding="utf-8"
+        )
+        test_dir = results / "test" / "epoch-000"
+        test_dir.mkdir(parents=True)
+        (test_dir / "secret.json").write_text("held out", encoding="utf-8")
+        workspace = results / "workspace"
+        workspace.mkdir()
+        (workspace / "journal.md").write_text("journal\n", encoding="utf-8")
+        metadata = RuntimeMetadata(
+            run_id="run-001",
+            runtime_name="self-improvement-run-001",
+            environment="staging",
+            manifest=".introspection/self-improvement-run-001.yaml",
+            working_recipe="recipes/self-improvement/run-001/legal-agent",
+        )
+        write_runtime_metadata(root, metadata)
+        (results / "metadata" / "run.json").write_text(
+            json.dumps(
+                {"config": {"researcher": {"model": "gpt-6-sol", "epoch_session_mode": "fresh"}}}
+            ),
+            encoding="utf-8",
+        )
+        return results
+
+    def test_prepare_workspace_stages_only_recipe_and_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results = self.make_run(root)
+            legacy_workspace = results / "metadata" / "researcher" / "epoch-002" / "workspace"
+            legacy_workspace.mkdir(parents=True)
+            (legacy_workspace / "unsanitized-evaluation.json").write_text(
+                "legacy evaluator payload", encoding="utf-8"
+            )
+
+            workspace = prepare_research_workspace(root, "run-001", 2)
+
+            self.assertEqual((workspace / "recipe" / "SYSTEM.md").read_text(), "working prompt\n")
+            self.assertFalse((workspace / "references").exists())
+            self.assertFalse((workspace / "epochs").exists())
+            self.assertFalse((workspace / "workspace").exists())
+            self.assertTrue(
+                (
+                    results
+                    / "epochs"
+                    / "epoch-000"
+                    / "sample-task"
+                    / "trial-001"
+                    / "evaluation"
+                    / "gpt-6-sol"
+                    / "scores.json"
+                ).exists()
+            )
+            self.assertFalse((workspace / "test").exists())
+            self.assertFalse((workspace / "epochs" / "epoch-002").exists())
+            self.assertNotEqual(workspace, legacy_workspace)
+            self.assertTrue((legacy_workspace / "unsanitized-evaluation.json").exists())
+            self.assertTrue((results / "workspace" / "journal.md").exists())
+            self.assertTrue((results / "metadata" / "researcher" / "epoch-002").exists())
+
+    def test_permission_profile_limits_write_roots_to_recipe_and_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace = (root / "codex-workspace").resolve()
+            results = root / "results" / "self-improvement" / "run-001"
+            for name in ("recipe", "instructions", ".agents"):
+                (workspace / name).mkdir(parents=True)
+
+            overrides = build_permission_overrides(workspace, results)
+            results = results.resolve()
+
+            self.assertIn('default_permissions="researcher"', overrides)
+            self.assertFalse(any("extends" in override for override in overrides))
+            config = tomllib.loads("\n".join(overrides))
+            filesystem = config["permissions"]["researcher"]["filesystem"]
+            self.assertEqual(filesystem[":root"], "deny")
+            self.assertEqual(filesystem[str(workspace / "recipe")], "write")
+            self.assertEqual(filesystem[str(results / "epochs")], "read")
+            self.assertEqual(filesystem[str(results / "references" / "baseline_recipe")], "read")
+            self.assertEqual(filesystem[str(results / "workspace")], "write")
+            self.assertNotIn(str(results / "test"), filesystem)
+            self.assertNotIn(str(results / "metadata"), filesystem)
+
+    def test_changed_paths_are_relative_and_detect_read_only_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "recipe").mkdir()
+            (root / "epochs" / "epoch-000").mkdir(parents=True)
+            (root / "recipe" / "SYSTEM.md").write_text("new", encoding="utf-8")
+            (root / "epochs" / "epoch-000" / "aggregate.json").write_text("same")
+            before = snapshot_paths(root)
+            (root / "recipe" / "SYSTEM.md").write_text("newer", encoding="utf-8")
+            (root / "epochs" / "epoch-000" / "aggregate.json").write_text("tampered")
+
+            actual = changed_paths(root, before)
+
+            self.assertEqual(actual, {"recipe/SYSTEM.md", "epochs/epoch-000/aggregate.json"})
+
+    def test_research_result_requires_expected_shape(self) -> None:
+        valid = {
+            "status": "ready_for_review",
+            "summary": "Updated the recipe.",
+            "hypothesis": "A general workflow improvement.",
+            "changes": [{"path": "recipe/SYSTEM.md", "reason": "Clarifies review steps."}],
+            "next_experiment": "Run the train split.",
+        }
+
+        validate_research_result(valid)
+
+        with self.assertRaises(ValueError):
+            validate_research_result({**valid, "unmodeled": True})
+        with self.assertRaises(ValueError):
+            validate_research_result(
+                {
+                    **valid,
+                    "changes": [{"path": "../test/criteria.json", "reason": "Not allowed."}],
+                }
+            )
+
+    def test_researcher_stages_recipe_and_writes_notes_directly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results = self.make_run(root)
+            prepare_research_workspace(root, "run-001", 1)
+            result = {
+                "status": "ready_for_review",
+                "summary": "Clarified the recipe.",
+                "hypothesis": "A general instruction will reduce omissions.",
+                "changes": [
+                    {"path": "recipe/SYSTEM.md", "reason": "Clarifies the workflow."},
+                    {"path": "workspace/journal.md", "reason": "Records the hypothesis."},
+                ],
+                "next_experiment": "Run the next train epoch.",
+            }
+
+            def fake_codex(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                self.assertNotIn("OPENAI_API_KEY", kwargs["env"])
+                self.assertEqual(kwargs["env"]["CODEX_HOME"], str((root / "auth-home").resolve()))
+                self.assertIn("--ignore-user-config", command)
+                self.assertIn("--strict-config", command)
+                self.assertEqual(command[command.index("--model") + 1], "gpt-6-sol")
+                stdout = kwargs["stdout"]
+                stdout.write('{"type":"thread.started","thread_id":"thread-123"}\n')
+                output_path = Path(command[command.index("--output-last-message") + 1])
+                output_path.write_text(json.dumps(result), encoding="utf-8")
+                workspace = Path(str(kwargs["cwd"]))
+                (workspace / "recipe" / "SYSTEM.md").write_text("improved recipe\n")
+                (results / "workspace" / "journal.md").write_text("new research note\n")
+                self.assertIn(str(results / "epochs"), command[-1])
+                self.assertIn(str(results / "references" / "baseline_recipe"), command[-1])
+                return subprocess.CompletedProcess(command, 0)
+
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"CODEX_HOME": str(root / "auth-home"), "OPENAI_API_KEY": "unused"},
+                ),
+                patch("runner.researcher.subprocess.run", side_effect=fake_codex),
+            ):
+                artifacts = run_researcher(root, "run-001", 1)
+
+            self.assertEqual(
+                (root / "recipes/self-improvement/run-001/legal-agent/SYSTEM.md").read_text(),
+                "working prompt\n",
+            )
+            self.assertEqual(
+                (artifacts / "sandbox" / "recipe" / "SYSTEM.md").read_text(),
+                "improved recipe\n",
+            )
+            self.assertEqual(
+                (results / "workspace" / "journal.md").read_text(), "new research note\n"
+            )
+            run_metadata = json.loads((artifacts / "run.json").read_text(encoding="utf-8"))
+            self.assertEqual(run_metadata["thread_id"], "thread-123")
+            self.assertEqual(run_metadata["model"], "gpt-6-sol")
+            self.assertEqual(run_metadata["status"], "pending_verification")
+            self.assertTrue((artifacts / "events.jsonl").is_file())
+            with self.assertRaises(FileExistsError):
+                run_researcher(root, "run-001", 1)
+
+    def test_researcher_does_not_sync_unreported_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.make_run(root)
+
+            def fake_codex(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                kwargs["stdout"].write('{"type":"thread.started","thread_id":"thread-123"}\n')
+                result_path = Path(command[command.index("--output-last-message") + 1])
+                result_path.write_text(
+                    json.dumps(
+                        {
+                            "status": "no_change",
+                            "summary": "No change.",
+                            "hypothesis": "None.",
+                            "changes": [],
+                            "next_experiment": "None.",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (Path(kwargs["cwd"]) / "recipe" / "SYSTEM.md").write_text(
+                    "unreported edit\n", encoding="utf-8"
+                )
+                return subprocess.CompletedProcess(command, 0)
+
+            with (
+                patch("runner.researcher.subprocess.run", side_effect=fake_codex),
+                self.assertRaisesRegex(ValueError, "do not match observed files"),
+            ):
+                run_researcher(root, "run-001", 1)
+
+            recipe = root / "recipes" / "self-improvement" / "run-001" / "legal-agent"
+            self.assertEqual((recipe / "SYSTEM.md").read_text(encoding="utf-8"), "working prompt\n")
+
+    def test_revision_resumes_same_thread_and_checks_reported_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results = self.make_run(root)
+            workspace = prepare_research_workspace(root, "run-001", 1)
+            artifact_dir = workspace.parent
+            (artifact_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "status": "pending_verification",
+                        "thread_id": "thread-123",
+                        "candidate_snapshot": snapshot_paths(workspace / "recipe"),
+                        "notes_snapshot": snapshot_paths(results / "workspace"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            feedback = artifact_dir / "feedback.json"
+            feedback.write_text(
+                json.dumps(
+                    {
+                        "verdict": "reject",
+                        "issues": ["The wording refers to a sample."],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_codex(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                self.assertEqual(command[1:4], ["exec", "resume", "thread-123"])
+                self.assertNotIn("--ephemeral", command)
+                self.assertEqual(command[command.index("--model") + 1], "gpt-6-sol")
+                (workspace / "recipe" / "SYSTEM.md").write_text("generalized guidance\n")
+                Path(command[command.index("--output-last-message") + 1]).write_text(
+                    json.dumps(
+                        {
+                            "status": "ready_for_review",
+                            "summary": "Revised wording.",
+                            "hypothesis": "General guidance improves completeness.",
+                            "changes": [
+                                {"path": "recipe/SYSTEM.md", "reason": "Removed sample wording."}
+                            ],
+                            "next_experiment": "Evaluate train split.",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch("runner.researcher.subprocess.run", side_effect=fake_codex):
+                revision_dir = revise_researcher(root, "run-001", 1, feedback)
+            self.assertTrue((revision_dir / "researcher_result.json").exists())
+            metadata = json.loads((artifact_dir / "run.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["status"], "pending_verification")
+            self.assertEqual(metadata["revision_count"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

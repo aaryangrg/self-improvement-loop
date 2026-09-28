@@ -51,7 +51,11 @@ def evaluate_outputs(
         str(config.harvey_repo),
         "python",
         "-m",
-        "lab_core.evaluation.run_eval",
+        (
+            "runner.harvey_eval"
+            if "gpt-6-sol" in config.eval_judges
+            else "lab_core.evaluation.run_eval"
+        ),
         "--run-id",
         eval_run_id,
         "--task",

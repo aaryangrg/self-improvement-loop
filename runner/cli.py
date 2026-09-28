@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
 from .config import RunnerConfig
 from .execute import run_one
-from .experiment import run_experiment
+from .experiment import IncompleteExperimentError, run_experiment
 from .git_ops import GitOps
 from .introspection import IntrospectionClient
+from .loop import start_loop
+from .researcher import prepare_research_workspace, run_researcher
 from .self_improvement import (
     bootstrap_run,
     candidate_commit_paths,
@@ -25,6 +28,7 @@ from .self_improvement import (
     runner_config_with_runtime_metadata,
     update_best_candidate,
 )
+from .verifier import promote_candidate, run_verifier
 
 
 def main() -> int:
@@ -133,6 +137,22 @@ def main() -> int:
     update_best_parser = self_improve_subparsers.add_parser("update-best-candidate")
     update_best_parser.add_argument("--run-id", required=True)
 
+    prepare_researcher_parser = self_improve_subparsers.add_parser("prepare-researcher")
+    add_researcher_args(prepare_researcher_parser)
+
+    research_parser = self_improve_subparsers.add_parser("research")
+    add_researcher_args(research_parser)
+
+    verify_parser = self_improve_subparsers.add_parser("verify")
+    add_researcher_args(verify_parser)
+
+    promote_parser = self_improve_subparsers.add_parser("promote")
+    add_researcher_args(promote_parser)
+
+    start_parser = self_improve_subparsers.add_parser("start")
+    start_parser.add_argument("--config", type=Path, required=True)
+    start_parser.add_argument("--run-id", default=None)
+
     args = parser.parse_args()
     if args.command == "run-one":
         config = RunnerConfig(
@@ -162,13 +182,17 @@ def main() -> int:
             eval_judges=tuple(args.eval_judges),
             eval_parallel=args.eval_parallel,
         )
-        run_dir = run_experiment(
-            config_path=args.config,
-            split=args.split,
-            runner_config=config,
-            experiment_run_id=args.experiment_run_id,
-            results_root=args.results_root,
-        )
+        try:
+            run_dir = run_experiment(
+                config_path=args.config,
+                split=args.split,
+                runner_config=config,
+                experiment_run_id=args.experiment_run_id,
+                results_root=args.results_root,
+            )
+        except IncompleteExperimentError as error:
+            print(error, file=sys.stderr)
+            return 1
         print(run_dir)
         return 0
     if args.command == "self-improve":
@@ -314,19 +338,20 @@ def main() -> int:
                 runtime_id=args.runtime_id,
                 environment=args.environment,
                 agent=args.agent,
-                enable_eval=not args.skip_eval,
-                eval_judges=tuple(args.eval_judges),
-                eval_parallel=args.eval_parallel,
             )
             config = runner_config_with_runtime_metadata(Path("."), args.run_id, config)
-            epoch_dir = run_epoch_split(
-                repo_root=Path("."),
-                config=self_improvement_config,
-                run_id=args.run_id,
-                epoch=args.epoch,
-                split_kind="train" if args.self_improve_command == "run-train" else "test",
-                runner_config=config,
-            )
+            try:
+                epoch_dir = run_epoch_split(
+                    repo_root=Path("."),
+                    config=self_improvement_config,
+                    run_id=args.run_id,
+                    epoch=args.epoch,
+                    split_kind="train" if args.self_improve_command == "run-train" else "test",
+                    runner_config=config,
+                )
+            except IncompleteExperimentError as error:
+                print(error, file=sys.stderr)
+                return 1
             print(epoch_dir)
             return 0
         if args.self_improve_command == "refresh-metrics":
@@ -343,6 +368,21 @@ def main() -> int:
                 / "best_candidate.json"
             )
             return 0
+        if args.self_improve_command == "prepare-researcher":
+            print(prepare_research_workspace(Path("."), args.run_id, args.epoch))
+            return 0
+        if args.self_improve_command == "research":
+            print(run_researcher(Path("."), args.run_id, args.epoch))
+            return 0
+        if args.self_improve_command == "verify":
+            print(run_verifier(Path("."), args.run_id, args.epoch))
+            return 0
+        if args.self_improve_command == "promote":
+            print(promote_candidate(Path("."), args.run_id, args.epoch))
+            return 0
+        if args.self_improve_command == "start":
+            print(start_loop(Path("."), args.config, args.run_id))
+            return 0
         raise AssertionError(f"unhandled self-improve command {args.self_improve_command}")
     raise AssertionError(f"unhandled command {args.command}")
 
@@ -355,9 +395,11 @@ def add_self_improve_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--runtime-id", default=None)
     parser.add_argument("--environment", default="staging")
     parser.add_argument("--agent", default="agent")
-    parser.add_argument("--skip-eval", action="store_true")
-    parser.add_argument("--eval-judges", nargs="+", default=["gpt-4.1"])
-    parser.add_argument("--eval-parallel", type=int, default=2)
+
+
+def add_researcher_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--epoch", type=int, required=True)
 
 
 def _json_line(payload: object) -> str:

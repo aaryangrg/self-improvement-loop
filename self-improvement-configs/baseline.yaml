@@ -4,13 +4,19 @@ description: Baseline self-improvement loop over the Harvey baseline split.
 seed_recipe: recipes/legal-agent
 split_config: experiment_configs/baseline_split.yaml
 
+evaluation:
+  judges: [gpt-6-sol]
+  parallel: 1
+
 loop:
   max_epochs: 10
   test_every: 3
 
 researcher:
+  model: gpt-6-sol
   epoch_session_mode: fresh
 
 verifier:
+  model: gpt-6-sol
   enabled: true
   max_revision_attempts: 2

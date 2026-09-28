@@ -78,8 +78,16 @@ def run_one(task_id: str, trial: int, config: RunnerConfig) -> Path:
         _write_json(trial_dir / "incidents.json", incidents.to_dict())
         raise
 
-    _salvage_after_task_start(client, handle.task_id, outputs_dir, trial_dir)
+    conversation = _salvage_after_task_start(client, handle.task_id, outputs_dir, trial_dir)
     _write_json(trial_dir / "incidents.json", incidents.to_dict())
+
+    agent_error = _agent_execution_error(conversation, config.agent)
+    if agent_error is not None:
+        _write_json(
+            trial_dir / "execution_error.json",
+            {"status": "error", "phase": "execution", "message": agent_error},
+        )
+        raise RuntimeError(f"agent execution failed: {agent_error}")
 
     evaluation = evaluate_outputs(task, outputs_dir, trial_dir, config)
     _write_json(trial_dir / "evaluation.json", evaluation)
@@ -91,7 +99,8 @@ def _salvage_after_task_start(
     task_id: str,
     outputs_dir: Path,
     trial_dir: Path,
-) -> None:
+) -> object | None:
+    conversation: object | None = None
     try:
         conversation = client.get_conversation(task_id)
         _write_json(trial_dir / "conversation.json", conversation)
@@ -109,7 +118,7 @@ def _salvage_after_task_start(
             trial_dir / "task_fetch_error.json",
             {"status": "error", "phase": "task_fetch", "message": str(error)},
         )
-        return
+        return conversation
 
     try:
         client.download_output_files(task_payload, outputs_dir)
@@ -118,3 +127,19 @@ def _salvage_after_task_start(
             trial_dir / "artifact_download_error.json",
             {"status": "error", "phase": "artifact_download", "message": str(error)},
         )
+    return conversation
+
+
+def _agent_execution_error(conversation: object | None, agent: str) -> str | None:
+    if not isinstance(conversation, dict):
+        return None
+    items = conversation.get("items")
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict) or item.get("name") != f"invoke_agent {agent}":
+            continue
+        status = item.get("status")
+        if isinstance(status, dict) and str(status.get("code", "")).lower() == "error":
+            return str(status.get("message") or "root agent span failed")
+    return None
