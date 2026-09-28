@@ -16,6 +16,7 @@ from .evaluate import evaluate_outputs
 from .execute import run_one
 from .harvey import load_task
 from .paths import task_result_dir
+from .progress import SplitProgress
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,7 @@ def run_experiment(
         "evaluation": {
             "judges": list(runner_config.eval_judges),
             "parallel": runner_config.eval_parallel,
+            "reasoning_effort": runner_config.eval_reasoning_effort,
             "enabled": runner_config.enable_eval,
         },
         "defaults": asdict(split_config.defaults),
@@ -176,6 +178,7 @@ def run_experiment(
         for task_id in split_config.splits[split].task_ids
         for trial in range(1, split_config.defaults.trials_per_task + 1)
     ]
+    progress = SplitProgress(split_dir / "progress.json", split, jobs)
 
     trial_results: list[TrialResult] = []
     task_config = replace(runner_config, results_root=split_dir, enable_eval=False)
@@ -184,27 +187,44 @@ def run_experiment(
         ThreadPoolExecutor(max_workers=split_config.defaults.task_concurrency) as task_pool,
         ThreadPoolExecutor(max_workers=split_config.defaults.eval_concurrency) as eval_pool,
     ):
-        pending: dict[Future[Any], str] = {
-            task_pool.submit(_run_trial_without_eval, task_id, trial, task_config): "task"
+        pending: dict[Future[Any], tuple[str, str, int]] = {
+            task_pool.submit(_run_with_progress, progress, task_id, trial, task_config): (
+                "task",
+                task_id,
+                trial,
+            )
             for task_id, trial in jobs
         }
         while pending:
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
-                phase = pending.pop(future)
+                phase, requested_task_id, requested_trial = pending.pop(future)
                 result = future.result()
                 if phase == "task" and not isinstance(result, TrialResult):
                     task_id, trial, trial_dir = result
                     if runner_config.enable_eval:
+                        progress.set_trial(
+                            requested_task_id, requested_trial, "awaiting_evaluation"
+                        )
                         pending[
                             eval_pool.submit(
-                                _evaluate_trial, task_id, trial, trial_dir, eval_config
+                                _evaluate_with_progress,
+                                progress,
+                                requested_task_id,
+                                requested_trial,
+                                task_id,
+                                trial,
+                                trial_dir,
+                                eval_config,
                             )
-                        ] = "eval"
+                        ] = ("eval", requested_task_id, requested_trial)
                     else:
-                        trial_results.append(_trial_result_from_dir(task_id, trial, trial_dir))
+                        completed = _trial_result_from_dir(task_id, trial, trial_dir)
+                        trial_results.append(completed)
+                        progress.set_trial(requested_task_id, requested_trial, completed.status)
                 else:
                     trial_results.append(result)
+                    progress.set_trial(requested_task_id, requested_trial, result.status)
                 _write_json(
                     split_dir / "aggregate.json", build_aggregate(run_id, split, trial_results)
                 )
@@ -217,13 +237,35 @@ def run_experiment(
         or aggregate["number_of_scored_trials"] != len(jobs)
         or aggregate["number_of_evaluated_tasks"] != len(split_config.splits[split].task_ids)
     ):
+        progress.finish("incomplete")
         raise IncompleteExperimentError(
             f"{split} incomplete: {aggregate['number_of_scored_trials']}/{len(jobs)} trials "
             f"scored, {aggregate['number_of_evaluated_tasks']}/"
             f"{len(split_config.splits[split].task_ids)} tasks evaluated. "
             f"Results: {split_dir / 'aggregate.json'}"
         )
+    progress.finish("completed")
     return run_dir
+
+
+def _run_with_progress(
+    progress: SplitProgress, task_id: str, trial: int, config: RunnerConfig
+) -> tuple[str, int, Path] | TrialResult:
+    progress.set_trial(task_id, trial, "executing")
+    return _run_trial_without_eval(task_id, trial, config)
+
+
+def _evaluate_with_progress(
+    progress: SplitProgress,
+    requested_task_id: str,
+    requested_trial: int,
+    task_id: str,
+    trial: int,
+    trial_dir: Path,
+    config: RunnerConfig,
+) -> TrialResult:
+    progress.set_trial(requested_task_id, requested_trial, "evaluating")
+    return _evaluate_trial(task_id, trial, trial_dir, config)
 
 
 def _int_default(payload: dict[Any, Any], key: str, default: int) -> int:

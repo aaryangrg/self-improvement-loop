@@ -69,6 +69,9 @@ class ExperimentSchedulingTests(unittest.TestCase):
             aggregate = json.loads((result_dir / "aggregate.json").read_text(encoding="utf-8"))
             self.assertEqual(aggregate["number_of_scored_trials"], 2)
             self.assertEqual(aggregate["number_of_evaluated_tasks"], 2)
+            progress = json.loads((result_dir / "progress.json").read_text(encoding="utf-8"))
+            self.assertEqual(progress["status"], "completed")
+            self.assertEqual({item["status"] for item in progress["trials"]}, {"scored"})
 
     def test_task_without_output_does_not_start_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -100,6 +103,11 @@ class ExperimentSchedulingTests(unittest.TestCase):
                 (root / "results" / "epoch-000" / "aggregate.json").read_text(encoding="utf-8")
             )
             self.assertEqual(aggregate["number_of_failed_trials"], 1)
+            progress = json.loads(
+                (root / "results" / "epoch-000" / "progress.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(progress["status"], "incomplete")
+            self.assertEqual(progress["trials"][0]["status"], "failed")
 
 
 if __name__ == "__main__":

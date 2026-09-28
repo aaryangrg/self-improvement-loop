@@ -5,10 +5,13 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .recipe_candidate import stage_agent_configs
 from .self_improvement import load_runtime_metadata, validate_run_id
 
 RESEARCHER_ASSETS = Path(__file__).resolve().parents[1] / "researcher"
@@ -58,7 +61,7 @@ def prepare_research_workspace(repo_root: Path, run_id: str, epoch: int) -> Path
                 )
             preparation = _read_json_object(preparation_path)
             if (
-                preparation.get("format_version") != 3
+                preparation.get("format_version") != 4
                 or preparation.get("run_id") != run_id
                 or preparation.get("epoch") != epoch
             ):
@@ -90,6 +93,7 @@ def prepare_research_workspace(repo_root: Path, run_id: str, epoch: int) -> Path
     workspace.mkdir()
     (workspace / "instructions").mkdir()
     _copy_tree(working_recipe, workspace / "recipe")
+    stage_agent_configs(workspace / "recipe")
     _copy_tree(RESEARCHER_ASSETS / "skills", workspace / ".agents" / "skills")
     shutil.copy2(RESEARCHER_ASSETS / "AGENTS.md", workspace / "AGENTS.md")
     shutil.copy2(
@@ -99,7 +103,7 @@ def prepare_research_workspace(repo_root: Path, run_id: str, epoch: int) -> Path
     _write_json(
         artifact_dir / "sandbox.json",
         {
-            "format_version": 3,
+            "format_version": 4,
             "run_id": run_id,
             "epoch": epoch,
             "recipe_snapshot": snapshot_paths(working_recipe),
@@ -157,8 +161,8 @@ def validate_research_result(payload: object) -> dict[str, Any]:
     expected = {"status", "summary", "hypothesis", "changes", "next_experiment"}
     if payload.keys() != expected:
         raise ValueError(f"researcher result keys must be exactly: {', '.join(sorted(expected))}")
-    if payload["status"] not in {"ready_for_review", "no_change"}:
-        raise ValueError("researcher result status must be ready_for_review or no_change")
+    if payload["status"] != "ready_for_review":
+        raise ValueError("researcher result status must be ready_for_review")
     for key in ("summary", "hypothesis", "next_experiment"):
         if not isinstance(payload[key], str):
             raise ValueError(f"researcher result {key} must be a string")
@@ -191,7 +195,7 @@ def run_researcher(repo_root: Path, run_id: str, epoch: int) -> Path:
     workspace = prepare_research_workspace(repo_root, run_id, epoch)
     artifact_dir = workspace.parent
     results_dir = repo_root / "results" / "self-improvement" / run_id
-    model = _researcher_model(results_dir)
+    model, reasoning_effort = _researcher_settings(results_dir)
     notes_dir = results_dir / "workspace"
     result_path = artifact_dir / "researcher_result.json"
     events_path = artifact_dir / "events.jsonl"
@@ -203,12 +207,15 @@ def run_researcher(repo_root: Path, run_id: str, epoch: int) -> Path:
         results_dir / "epochs" / f"epoch-{epoch - 1:03d}" / "aggregate.json"
     )
     prompt = _research_prompt(run_id, epoch, previous_result, results_dir)
-    command = _researcher_command(repo_root, workspace, results_dir, result_path, model, prompt)
+    command = _researcher_command(
+        repo_root, workspace, results_dir, result_path, model, reasoning_effort, prompt
+    )
 
     run_metadata: dict[str, Any] = {
         "run_id": run_id,
         "epoch": epoch,
         "model": model,
+        "reasoning_effort": reasoning_effort,
         "started_at": datetime.now(UTC).isoformat(),
         "command": command[:-1] + ["<prompt>"],
         "workspace": str(workspace),
@@ -264,7 +271,7 @@ def run_researcher(repo_root: Path, run_id: str, epoch: int) -> Path:
 
         run_metadata.update(
             {
-                "status": "pending_verification" if candidate_modified else "complete",
+                "status": "pending_verification" if candidate_modified else "needs_recipe_edit",
                 "result": result,
                 "changed_paths": sorted(modified),
                 "candidate_snapshot": snapshot_paths(workspace / "recipe"),
@@ -291,8 +298,19 @@ def revise_researcher(repo_root: Path, run_id: str, epoch: int, feedback_path: P
     metadata_path = artifact_dir / "run.json"
     metadata = _read_json_object(metadata_path)
     feedback = _read_json_object(feedback_path)
-    if metadata.get("status") != "pending_verification" or feedback.get("verdict") != "reject":
-        raise ValueError("a pending candidate and rejected verifier verdict are required")
+    if metadata.get("status") not in {
+        "pending_verification",
+        "promoted",
+        "needs_recipe_edit",
+    }:
+        raise ValueError("a pending, promoted, or no-edit candidate is required for revision")
+    if feedback.get("verdict") != "reject" and feedback.get("phase") not in {
+        "check",
+        "build",
+        "smoke",
+        "no_recipe_edit",
+    }:
+        raise ValueError("a verifier rejection or candidate diagnostic is required")
     thread_id = metadata.get("thread_id")
     if not isinstance(thread_id, str) or not thread_id:
         raise ValueError("researcher session cannot be resumed without a thread ID")
@@ -314,9 +332,9 @@ def revise_researcher(repo_root: Path, run_id: str, epoch: int, feedback_path: P
     result_path = revision_dir / "researcher_result.json"
     events_path = revision_dir / "events.jsonl"
     prompt = (
-        "The independent verifier rejected your candidate. Revise the staged recipe and "
+        "Your candidate did not pass a pre-train gate. Revise the staged recipe and "
         "research notes as needed, using your prior research context. "
-        f"Verifier feedback: {json.dumps(feedback, sort_keys=True)}. "
+        f"Diagnostic feedback: {json.dumps(feedback, sort_keys=True)}. "
         "Return the required structured result with every file changed in this revision."
     )
     command = _researcher_command(
@@ -324,7 +342,7 @@ def revise_researcher(repo_root: Path, run_id: str, epoch: int, feedback_path: P
         workspace,
         results_dir,
         result_path,
-        _researcher_model(results_dir),
+        *_researcher_settings(results_dir),
         prompt,
         thread_id=thread_id,
     )
@@ -365,18 +383,22 @@ def revise_researcher(repo_root: Path, run_id: str, epoch: int, feedback_path: P
         metadata["status"] = "revision_failed"
         _write_json(metadata_path, metadata)
         raise ValueError("researcher revision changes do not match observed files")
+    working_recipe = repo_root / load_runtime_metadata(repo_root, run_id).working_recipe
+    with tempfile.TemporaryDirectory(prefix="researcher-effective-") as temp:
+        staged_working = Path(temp) / "recipe"
+        shutil.copytree(working_recipe, staged_working)
+        stage_agent_configs(staged_working)
+        effective_changed = recipe_after != snapshot_paths(staged_working)
     metadata.update(
         {
             "status": (
                 "pending_verification"
-                if recipe_after
-                != snapshot_paths(
-                    repo_root / load_runtime_metadata(repo_root, run_id).working_recipe
-                )
-                else "complete"
+                if recipe_before != recipe_after and effective_changed
+                else "needs_recipe_edit"
             ),
             "result": result,
             "candidate_snapshot": recipe_after,
+            "candidate_promoted": False,
             "notes_snapshot": notes_after,
             "revision_count": revision_number,
             "last_revision": str(revision_dir),
@@ -392,6 +414,7 @@ def _researcher_command(
     results_dir: Path,
     result_path: Path,
     model: str,
+    reasoning_effort: str,
     prompt: str,
     thread_id: str | None = None,
 ) -> list[str]:
@@ -411,6 +434,8 @@ def _researcher_command(
             str(result_path),
             "--model",
             model,
+            "--config",
+            f'model_reasoning_effort="{reasoning_effort}"',
         ]
     )
     if thread_id is None:
@@ -451,14 +476,17 @@ def _assert_fresh_session_mode(results_dir: Path) -> None:
         )
 
 
-def _researcher_model(results_dir: Path) -> str:
+def _researcher_settings(results_dir: Path) -> tuple[str, str]:
     payload = _read_json_object(results_dir / "metadata" / "run.json")
     config = payload.get("config")
     researcher = config.get("researcher") if isinstance(config, dict) else None
     model = researcher.get("model") if isinstance(researcher, dict) else None
+    effort = researcher.get("reasoning_effort") if isinstance(researcher, dict) else None
     if not isinstance(model, str) or not model.strip():
         raise ValueError("run metadata is missing required researcher.model")
-    return model.strip()
+    if effort not in {"low", "medium", "high", "xhigh"}:
+        raise ValueError("run metadata is missing valid researcher.reasoning_effort")
+    return model.strip(), str(effort)
 
 
 def _copy_tree(source: Path, destination: Path) -> None:
@@ -505,14 +533,60 @@ def _is_allowed_relative_path(path: str) -> bool:
     )
 
 
+def _dedicated_codex_home() -> Path:
+    codex_home = Path.home() / ".self-improvement-loop" / "codex"
+    codex_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return codex_home.resolve()
+
+
+def ensure_codex_login(repo_root: Path) -> None:
+    codex_home = _dedicated_codex_home()
+    cli = repo_root / "node_modules" / ".bin" / "codex"
+    environment = os.environ.copy()
+    environment["CODEX_HOME"] = str(codex_home)
+    environment.pop("OPENAI_API_KEY", None)
+    environment.pop("CODEX_API_KEY", None)
+    status_command = [str(cli), "login", "status"]
+    status = subprocess.run(
+        status_command,
+        cwd=repo_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if status.returncode == 0:
+        return
+    details = f"{status.stdout}\n{status.stderr}".strip()
+    if "not logged in" not in details.lower():
+        raise RuntimeError(f"Cannot check Codex login in {codex_home}: {details}")
+    login_command = f'CODEX_HOME="{codex_home}" {cli} login'
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            f"Codex login is required before self-improve start. Run: {login_command}"
+        )
+    print(f"Codex login is required for {codex_home}. Starting sign-in...", flush=True)
+    login = subprocess.run([str(cli), "login"], cwd=repo_root, env=environment, check=False)
+    if login.returncode != 0:
+        raise RuntimeError(f"Codex login did not complete. Run: {login_command}")
+    status = subprocess.run(
+        status_command,
+        cwd=repo_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if status.returncode != 0:
+        raise RuntimeError(f"Codex login could not be confirmed. Run: {login_command}")
+
+
 def _codex_environment(isolated_home: Path) -> dict[str, str]:
     allowed = {"PATH", "TMPDIR", "LANG", "LC_ALL", "TERM"}
     environment = {key: value for key, value in os.environ.items() if key in allowed}
     isolated_home.mkdir(parents=True, exist_ok=True)
     environment["HOME"] = str(isolated_home)
-    environment["CODEX_HOME"] = str(
-        Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser().resolve()
-    )
+    environment["CODEX_HOME"] = str(_dedicated_codex_home())
     return environment
 
 
@@ -540,13 +614,10 @@ def _research_prompt(run_id: str, epoch: int, aggregate: dict[str, Any], results
         f"Self-improvement run `{run_id}`, epoch {epoch}.\n\n"
         f"Train epoch {epoch - 1} just completed. Its aggregate was: "
         f"`{json.dumps(scores, sort_keys=True)}`.\n\n"
-        "Review completed train traces and evaluation scores under "
-        f"`{results_dir / 'epochs'}` and research notes under "
-        f"`{results_dir / 'workspace'}`. The read-only baseline is at "
-        f"`{results_dir / 'references' / 'baseline_recipe'}`. "
-        "Form a generalizable hypothesis, then edit the staged `recipe/` or the research notes. "
-        "Do not optimize for an individual task or inspect held-out data. "
-        "Do not change files outside staged recipe/ and the research notes directory. "
-        "Return only the structured result required by the output schema, and document the reason "
-        "for each changed file. Do not commit, push, or modify evaluation or runner code."
+        f"Completed training epochs: `{results_dir / 'epochs'}`. "
+        f"Research notes: `{results_dir / 'workspace'}`. "
+        f"Read-only starting recipe: `{results_dir / 'references' / 'baseline_recipe'}`.\n\n"
+        "Follow `AGENTS.md` and its two research skills. Review this epoch against prior "
+        "hypotheses, edit `recipe/`, record the experiment in the research notes, and return "
+        "the structured result required by the output schema."
     )

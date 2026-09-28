@@ -6,7 +6,7 @@
   "properties": {
     "status": {
       "type": "string",
-      "enum": ["ready_for_review", "no_change"]
+      "enum": ["ready_for_review"]
     },
     "summary": {"type": "string"},
     "hypothesis": {"type": "string"},

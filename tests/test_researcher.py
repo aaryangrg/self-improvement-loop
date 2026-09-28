@@ -10,8 +10,10 @@ from typing import Any
 from unittest.mock import patch
 
 from runner.researcher import (
+    _research_prompt,
     build_permission_overrides,
     changed_paths,
+    ensure_codex_login,
     prepare_research_workspace,
     revise_researcher,
     run_researcher,
@@ -22,10 +24,58 @@ from runner.self_improvement import RuntimeMetadata, write_runtime_metadata
 
 
 class ResearcherWorkspaceTest(unittest.TestCase):
+    def test_start_login_checks_dedicated_profile_and_prompts_when_needed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            responses = [
+                subprocess.CompletedProcess([], 1, stdout="Not logged in", stderr=""),
+                subprocess.CompletedProcess([], 0),
+                subprocess.CompletedProcess([], 0, stdout="Logged in", stderr=""),
+            ]
+            with (
+                patch.dict("os.environ", {"HOME": str(root), "OPENAI_API_KEY": "unused"}),
+                patch("runner.researcher.subprocess.run", side_effect=responses) as run,
+                patch("runner.researcher.sys.stdin") as stdin,
+            ):
+                stdin.isatty.return_value = True
+                ensure_codex_login(root)
+
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(run.call_args_list[0].args[0][-2:], ["login", "status"])
+            self.assertEqual(run.call_args_list[1].args[0][-1], "login")
+            for call in run.call_args_list:
+                self.assertEqual(
+                    call.kwargs["env"]["CODEX_HOME"],
+                    str((root / ".self-improvement-loop" / "codex").resolve()),
+                )
+                self.assertNotIn("OPENAI_API_KEY", call.kwargs["env"])
+
+    def test_start_login_reports_command_without_tty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            response = subprocess.CompletedProcess([], 1, stdout="Not logged in", stderr="")
+            with (
+                patch.dict("os.environ", {"HOME": str(root)}),
+                patch("runner.researcher.subprocess.run", return_value=response) as run,
+                patch("runner.researcher.sys.stdin") as stdin,
+            ):
+                stdin.isatty.return_value = False
+                with self.assertRaisesRegex(RuntimeError, "codex login"):
+                    ensure_codex_login(root)
+            self.assertEqual(run.call_count, 1)
+
     def make_run(self, root: Path) -> Path:
         recipe = root / "recipes" / "self-improvement" / "run-001" / "legal-agent"
         recipe.mkdir(parents=True)
         (recipe / "SYSTEM.md").write_text("working prompt\n", encoding="utf-8")
+        (recipe / "package.json").write_text(
+            '{"name":"agent","pi":{"agents":["./agents/*.yaml"]}}', encoding="utf-8"
+        )
+        (recipe / "agents").mkdir()
+        (recipe / "agents" / "agent.yaml").write_text(
+            "name: agent\nai:\n  model: anthropic/claude-sonnet-4-6\ntools: [bash]\nskills: []\n",
+            encoding="utf-8",
+        )
         baseline = (
             root / "results" / "self-improvement" / "run-001" / "references" / "baseline_recipe"
         )
@@ -83,7 +133,15 @@ class ResearcherWorkspaceTest(unittest.TestCase):
         write_runtime_metadata(root, metadata)
         (results / "metadata" / "run.json").write_text(
             json.dumps(
-                {"config": {"researcher": {"model": "gpt-6-sol", "epoch_session_mode": "fresh"}}}
+                {
+                    "config": {
+                        "researcher": {
+                            "model": "gpt-6-sol",
+                            "reasoning_effort": "xhigh",
+                            "epoch_session_mode": "fresh",
+                        }
+                    }
+                }
             ),
             encoding="utf-8",
         )
@@ -102,6 +160,9 @@ class ResearcherWorkspaceTest(unittest.TestCase):
             workspace = prepare_research_workspace(root, "run-001", 2)
 
             self.assertEqual((workspace / "recipe" / "SYSTEM.md").read_text(), "working prompt\n")
+            staged_agent = (workspace / "recipe" / "agents" / "agent.yaml").read_text()
+            self.assertNotIn("ai:", staged_agent)
+            self.assertIn("tools:", staged_agent)
             self.assertFalse((workspace / "references").exists())
             self.assertFalse((workspace / "epochs").exists())
             self.assertFalse((workspace / "workspace").exists())
@@ -119,10 +180,43 @@ class ResearcherWorkspaceTest(unittest.TestCase):
             )
             self.assertFalse((workspace / "test").exists())
             self.assertFalse((workspace / "epochs" / "epoch-002").exists())
+            instructions = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+            for skill_name in ("self-improvement-research", "introspection-recipe-editing"):
+                skill_path = workspace / ".agents" / "skills" / skill_name / "SKILL.md"
+                self.assertTrue(skill_path.is_file())
+                self.assertIn(str(skill_path.relative_to(workspace)), instructions)
             self.assertNotEqual(workspace, legacy_workspace)
             self.assertTrue((legacy_workspace / "unsanitized-evaluation.json").exists())
             self.assertTrue((results / "workspace" / "journal.md").exists())
             self.assertTrue((results / "metadata" / "researcher" / "epoch-002").exists())
+
+    def test_research_prompt_contains_epoch_context_and_defers_static_guidance(self) -> None:
+        results = Path("/tmp/results/self-improvement/run-001")
+        prompt = _research_prompt(
+            "run-001",
+            2,
+            {"task_pass_rate": 0.5, "rubric_pass_rate": 0.75, "number_of_evaluated_tasks": 2},
+            results,
+        )
+
+        self.assertIn("Train epoch 1 just completed", prompt)
+        self.assertIn("task_pass_rate", prompt)
+        self.assertIn(str(results / "epochs"), prompt)
+        self.assertIn("Follow `AGENTS.md`", prompt)
+        self.assertNotIn("held-out", prompt)
+
+    def test_prepare_rejects_workspace_from_old_staging_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.make_run(root)
+            workspace = prepare_research_workspace(root, "run-001", 1)
+            record = workspace.parent / "sandbox.json"
+            metadata = json.loads(record.read_text(encoding="utf-8"))
+            metadata["format_version"] = 3
+            record.write_text(json.dumps(metadata), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "metadata does not match"):
+                prepare_research_workspace(root, "run-001", 1)
 
     def test_permission_profile_limits_write_roots_to_recipe_and_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -175,6 +269,8 @@ class ResearcherWorkspaceTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             validate_research_result({**valid, "unmodeled": True})
+        with self.assertRaisesRegex(ValueError, "ready_for_review"):
+            validate_research_result({**valid, "status": "no_change"})
         with self.assertRaises(ValueError):
             validate_research_result(
                 {
@@ -201,10 +297,14 @@ class ResearcherWorkspaceTest(unittest.TestCase):
 
             def fake_codex(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
                 self.assertNotIn("OPENAI_API_KEY", kwargs["env"])
-                self.assertEqual(kwargs["env"]["CODEX_HOME"], str((root / "auth-home").resolve()))
+                dedicated_home = root / ".self-improvement-loop" / "codex"
+                self.assertEqual(kwargs["env"]["CODEX_HOME"], str(dedicated_home.resolve()))
+                self.assertTrue(dedicated_home.is_dir())
+                self.assertNotEqual(kwargs["env"]["HOME"], kwargs["env"]["CODEX_HOME"])
                 self.assertIn("--ignore-user-config", command)
                 self.assertIn("--strict-config", command)
                 self.assertEqual(command[command.index("--model") + 1], "gpt-6-sol")
+                self.assertIn('model_reasoning_effort="xhigh"', command)
                 stdout = kwargs["stdout"]
                 stdout.write('{"type":"thread.started","thread_id":"thread-123"}\n')
                 output_path = Path(command[command.index("--output-last-message") + 1])
@@ -219,7 +319,11 @@ class ResearcherWorkspaceTest(unittest.TestCase):
             with (
                 patch.dict(
                     "os.environ",
-                    {"CODEX_HOME": str(root / "auth-home"), "OPENAI_API_KEY": "unused"},
+                    {
+                        "HOME": str(root),
+                        "CODEX_HOME": str(root / "personal-codex"),
+                        "OPENAI_API_KEY": "unused",
+                    },
                 ),
                 patch("runner.researcher.subprocess.run", side_effect=fake_codex),
             ):
@@ -239,6 +343,7 @@ class ResearcherWorkspaceTest(unittest.TestCase):
             run_metadata = json.loads((artifacts / "run.json").read_text(encoding="utf-8"))
             self.assertEqual(run_metadata["thread_id"], "thread-123")
             self.assertEqual(run_metadata["model"], "gpt-6-sol")
+            self.assertEqual(run_metadata["reasoning_effort"], "xhigh")
             self.assertEqual(run_metadata["status"], "pending_verification")
             self.assertTrue((artifacts / "events.jsonl").is_file())
             with self.assertRaises(FileExistsError):
@@ -255,7 +360,7 @@ class ResearcherWorkspaceTest(unittest.TestCase):
                 result_path.write_text(
                     json.dumps(
                         {
-                            "status": "no_change",
+                            "status": "ready_for_review",
                             "summary": "No change.",
                             "hypothesis": "None.",
                             "changes": [],
@@ -277,6 +382,37 @@ class ResearcherWorkspaceTest(unittest.TestCase):
 
             recipe = root / "recipes" / "self-improvement" / "run-001" / "legal-agent"
             self.assertEqual((recipe / "SYSTEM.md").read_text(encoding="utf-8"), "working prompt\n")
+
+    def test_researcher_requests_revision_when_only_notes_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results = self.make_run(root)
+
+            def fake_codex(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                kwargs["stdout"].write('{"type":"thread.started","thread_id":"thread-123"}\n')
+                result_path = Path(command[command.index("--output-last-message") + 1])
+                result_path.write_text(
+                    json.dumps(
+                        {
+                            "status": "ready_for_review",
+                            "summary": "Updated research notes.",
+                            "hypothesis": "A general improvement could help.",
+                            "changes": [
+                                {"path": "workspace/journal.md", "reason": "Recorded analysis."}
+                            ],
+                            "next_experiment": "Run another epoch.",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (results / "workspace" / "journal.md").write_text("new analysis\n")
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch("runner.researcher.subprocess.run", side_effect=fake_codex):
+                artifact_dir = run_researcher(root, "run-001", 1)
+            metadata = json.loads((artifact_dir / "run.json").read_text())
+            self.assertEqual(metadata["status"], "needs_recipe_edit")
+            self.assertEqual(metadata["thread_id"], "thread-123")
 
     def test_revision_resumes_same_thread_and_checks_reported_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -310,6 +446,7 @@ class ResearcherWorkspaceTest(unittest.TestCase):
                 self.assertEqual(command[1:4], ["exec", "resume", "thread-123"])
                 self.assertNotIn("--ephemeral", command)
                 self.assertEqual(command[command.index("--model") + 1], "gpt-6-sol")
+                self.assertIn('model_reasoning_effort="xhigh"', command)
                 (workspace / "recipe" / "SYSTEM.md").write_text("generalized guidance\n")
                 Path(command[command.index("--output-last-message") + 1]).write_text(
                     json.dumps(
@@ -333,6 +470,140 @@ class ResearcherWorkspaceTest(unittest.TestCase):
             metadata = json.loads((artifact_dir / "run.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["status"], "pending_verification")
             self.assertEqual(metadata["revision_count"], 1)
+
+    def test_revision_without_recipe_edit_requests_another_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results = self.make_run(root)
+            workspace = prepare_research_workspace(root, "run-001", 1)
+            artifact_dir = workspace.parent
+            (artifact_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "status": "needs_recipe_edit",
+                        "thread_id": "thread-123",
+                        "candidate_snapshot": snapshot_paths(workspace / "recipe"),
+                        "notes_snapshot": snapshot_paths(results / "workspace"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            feedback = artifact_dir / "feedback.json"
+            feedback.write_text(
+                json.dumps({"phase": "no_recipe_edit", "message": "No recipe edit observed."})
+            )
+
+            def fake_codex(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                self.assertEqual(command[1:4], ["exec", "resume", "thread-123"])
+                (results / "workspace" / "journal.md").write_text("new analysis\n")
+                Path(command[command.index("--output-last-message") + 1]).write_text(
+                    json.dumps(
+                        {
+                            "status": "ready_for_review",
+                            "summary": "Notes only.",
+                            "hypothesis": "General improvement.",
+                            "changes": [
+                                {"path": "workspace/journal.md", "reason": "Recorded analysis."}
+                            ],
+                            "next_experiment": "Run another epoch.",
+                        }
+                    )
+                )
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch("runner.researcher.subprocess.run", side_effect=fake_codex):
+                revise_researcher(root, "run-001", 1, feedback)
+
+            metadata = json.loads((artifact_dir / "run.json").read_text())
+            self.assertEqual(metadata["status"], "needs_recipe_edit")
+            self.assertEqual(metadata["revision_count"], 1)
+
+    def test_invalid_revision_returns_to_candidate_check_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results = self.make_run(root)
+            workspace = prepare_research_workspace(root, "run-001", 1)
+            artifact_dir = workspace.parent
+            (artifact_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "status": "pending_verification",
+                        "thread_id": "thread-123",
+                        "candidate_snapshot": snapshot_paths(workspace / "recipe"),
+                        "notes_snapshot": snapshot_paths(results / "workspace"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            feedback = artifact_dir / "feedback.json"
+            feedback.write_text(json.dumps({"phase": "check", "message": "Revise candidate."}))
+
+            def fake_codex(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                (workspace / "recipe" / "agents" / "agent.yaml").write_text(
+                    "name: agent\nai:\n  model: openai/other\ntools: [bash]\n"
+                )
+                Path(command[command.index("--output-last-message") + 1]).write_text(
+                    json.dumps(
+                        {
+                            "status": "ready_for_review",
+                            "summary": "Changed agent YAML.",
+                            "hypothesis": "A tool change might help.",
+                            "changes": [
+                                {"path": "recipe/agents/agent.yaml", "reason": "Change tools."}
+                            ],
+                            "next_experiment": "Run train split.",
+                        }
+                    )
+                )
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch("runner.researcher.subprocess.run", side_effect=fake_codex):
+                revise_researcher(root, "run-001", 1, feedback)
+
+            metadata = json.loads((artifact_dir / "run.json").read_text())
+            self.assertEqual(metadata["status"], "pending_verification")
+
+    def test_runtime_failure_revises_promoted_candidate_in_same_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results = self.make_run(root)
+            workspace = prepare_research_workspace(root, "run-001", 1)
+            artifact_dir = workspace.parent
+            (artifact_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "status": "promoted",
+                        "candidate_promoted": True,
+                        "thread_id": "thread-123",
+                        "candidate_snapshot": snapshot_paths(workspace / "recipe"),
+                        "notes_snapshot": snapshot_paths(results / "workspace"),
+                    }
+                )
+            )
+            feedback = artifact_dir / "build-failure.json"
+            feedback.write_text(json.dumps({"phase": "build", "message": "bad extension"}))
+
+            def fake_codex(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                self.assertEqual(command[1:4], ["exec", "resume", "thread-123"])
+                (workspace / "recipe" / "SYSTEM.md").write_text("repaired\n")
+                Path(command[command.index("--output-last-message") + 1]).write_text(
+                    json.dumps(
+                        {
+                            "status": "ready_for_review",
+                            "summary": "Repair startup.",
+                            "hypothesis": "Fix extension.",
+                            "changes": [{"path": "recipe/SYSTEM.md", "reason": "Repair."}],
+                            "next_experiment": "Smoke again.",
+                        }
+                    )
+                )
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch("runner.researcher.subprocess.run", side_effect=fake_codex):
+                revise_researcher(root, "run-001", 1, feedback)
+            metadata = json.loads((artifact_dir / "run.json").read_text())
+            self.assertEqual(metadata["status"], "pending_verification")
+            self.assertFalse(metadata["candidate_promoted"])
 
 
 if __name__ == "__main__":

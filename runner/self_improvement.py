@@ -22,17 +22,20 @@ RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 class LoopConfig:
     max_epochs: int = 10
     test_every: int = 3
+    max_code_revisions: int = 5
 
 
 @dataclass(frozen=True)
 class ResearcherConfig:
     model: str
+    reasoning_effort: str = "medium"
     epoch_session_mode: Literal["fresh", "resume"] = "fresh"
 
 
 @dataclass(frozen=True)
 class VerifierConfig:
     model: str
+    reasoning_effort: str = "medium"
     enabled: bool = True
     max_revision_attempts: int = 2
 
@@ -40,6 +43,7 @@ class VerifierConfig:
 @dataclass(frozen=True)
 class EvaluationConfig:
     judges: tuple[str, ...]
+    reasoning_effort: str = "low"
     parallel: int = 1
 
 
@@ -129,17 +133,21 @@ def load_self_improvement_config(path: Path) -> SelfImprovementConfig:
         loop=LoopConfig(
             max_epochs=_positive_int(loop_payload, "max_epochs", 10, path),
             test_every=_positive_int(loop_payload, "test_every", 3, path),
+            max_code_revisions=_nonnegative_int(loop_payload, "max_code_revisions", 5, path),
         ),
         evaluation=EvaluationConfig(
             judges=tuple(judges_payload),
+            reasoning_effort=_required_effort(evaluation_payload, "evaluation", path),
             parallel=_positive_int(evaluation_payload, "parallel", 1, path),
         ),
         researcher=ResearcherConfig(
             model=_required_model(researcher_payload, "researcher", path),
+            reasoning_effort=_required_effort(researcher_payload, "researcher", path),
             epoch_session_mode=epoch_session_mode,  # type: ignore[arg-type]
         ),
         verifier=VerifierConfig(
             model=_required_model(verifier_payload, "verifier", path),
+            reasoning_effort=_required_effort(verifier_payload, "verifier", path),
             enabled=bool(verifier_payload.get("enabled", True)),
             max_revision_attempts=_nonnegative_int(
                 verifier_payload,
@@ -407,6 +415,7 @@ def run_epoch_split(
         runner_config,
         eval_judges=config.evaluation.judges,
         eval_parallel=config.evaluation.parallel,
+        eval_reasoning_effort=config.evaluation.reasoning_effort,
     )
     parent = results_dir / ("epochs" if split_kind == "train" else "test")
     return run_experiment(
@@ -421,7 +430,11 @@ def run_epoch_split(
 
 def _pin_evaluation_config(results_dir: Path, evaluation: EvaluationConfig) -> None:
     path = results_dir / "metadata" / "evaluation.json"
-    expected = {"judges": list(evaluation.judges), "parallel": evaluation.parallel}
+    expected = {
+        "judges": list(evaluation.judges),
+        "parallel": evaluation.parallel,
+        "reasoning_effort": evaluation.reasoning_effort,
+    }
     if path.exists():
         if _load_json(path) != expected:
             raise ValueError(f"evaluation config differs from the pinned settings in {path}")
@@ -646,7 +659,7 @@ def _write_workspace_files(
         encoding="utf-8",
     )
     (workspace / "hypotheses.md").write_text(
-        "# Hypotheses\n\n" "| ID | Epoch | Hypothesis | Status |\n" "| --- | ---: | --- | --- |\n",
+        "# Hypotheses\n\n| ID | Epoch | Hypothesis | Status |\n| --- | ---: | --- | --- |\n",
         encoding="utf-8",
     )
     (workspace / "experiments.md").write_text(
@@ -656,7 +669,7 @@ def _write_workspace_files(
         encoding="utf-8",
     )
     (workspace / "current_plan.md").write_text(
-        "# Current Plan\n\n" "No active plan yet.\n",
+        "# Current Plan\n\nNo active plan yet.\n",
         encoding="utf-8",
     )
 
@@ -698,6 +711,13 @@ def _required_model(payload: dict[str, Any], role: str, path: Path) -> str:
     if not isinstance(model, str) or not model.strip():
         raise ValueError(f"{path}: {role}.model must be a non-empty string")
     return model.strip()
+
+
+def _required_effort(payload: dict[str, Any], role: str, path: Path) -> str:
+    effort = payload.get("reasoning_effort")
+    if effort not in {"low", "medium", "high", "xhigh"}:
+        raise ValueError(f"{path}: {role}.reasoning_effort must be low, medium, high, or xhigh")
+    return str(effort)
 
 
 def _positive_int(payload: dict[str, Any], key: str, default: int, path: Path) -> int:

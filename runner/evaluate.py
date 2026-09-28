@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -68,6 +69,7 @@ def evaluate_outputs(
     proc = subprocess.run(
         cmd,
         cwd=config.repo_root,
+        env={**os.environ, "HARVEY_JUDGE_REASONING_EFFORT": config.eval_reasoning_effort},
         capture_output=True,
         text=True,
         timeout=3600,
@@ -86,7 +88,7 @@ def evaluate_outputs(
         }
 
     copied: list[str] = []
-    for name in ("scores.json", "scores_dual.json", "report.html"):
+    for name in ("scores.json", "scores_dual.json", "report.html", "judge_usage.json"):
         source = harvey_run_dir / name
         if source.exists():
             target = evaluation_dir / name

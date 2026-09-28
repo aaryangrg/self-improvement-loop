@@ -40,10 +40,12 @@ epochs 001..N
   prepare researcher packet from train-only evidence
   invoke Codex researcher
   enforce edit allowlist
-  invoke fresh verifier
-  ask same researcher session to revise if verifier fails
-  commit candidate epoch edits on the PR branch
-  wait for/select the Introspection candidate version
+  validate staged recipe with a disposable manifest and introspection check
+  promote and commit candidate epoch edits on the PR branch
+  wait for the exact-commit Introspection version to become valid and ready
+  run one unscored startup smoke task against that version
+  invoke fresh verifier only for a runnable candidate
+  ask the same researcher session to revise after a failed gate
   run train split with updated working recipe
   optionally run held-out test split privately
   update journal, experiment records, and metrics
@@ -172,17 +174,16 @@ Tradeoffs:
 Default V1 mode should be `fresh`. Resume mode can be supported as an
 interactive option.
 
-The epoch-level mode applies across epochs only. Within one epoch, verifier
-feedback should go back to the same researcher session that made the original
-edit. This lets the researcher revise with full context on the change it just
-made.
+The epoch-level mode applies across epochs only. Within one epoch, recipe
+check, build, smoke, and verifier feedback go back to the same researcher
+session that made the original edit.
 
 ```text
 researcher attempt
-fresh verifier attempt
-if verifier fails:
+recipe check -> build -> startup smoke -> fresh verifier attempt
+if a gate fails:
   same researcher epoch session revises
-  fresh verifier attempt
+  rerun the gates on the new candidate
 ```
 
 ## Structured Step Completion
@@ -244,17 +245,21 @@ Verifier responsibilities:
 Suggested config:
 
 ```yaml
+loop:
+  max_code_revisions: 5
 verifier:
   model: gpt-6-sol
   enabled: true
   max_revision_attempts: 2
-  block_on_fail: true
 ```
 
-If verification fails, the orchestrator should pass the verifier result back to
-the same researcher epoch session and ask it to revise. Then a new fresh
-verifier invocation checks the revised state. If the verifier still fails after
-`max_revision_attempts`, the epoch stops for human review.
+`max_code_revisions` bounds revisions caused by recipe-check, build, or smoke
+failures. `verifier.max_revision_attempts` separately bounds revisions caused by
+verifier rejection. Both count revisions after the initial candidate. A failed
+`introspection check` or build never spends verifier tokens. The smoke task has
+no Harvey input or score: it proves that the sandbox and root agent can start
+and complete one turn, not that every tool is semantically correct. If any gate
+still fails after its limit, the epoch stops without a train score.
 
 ## Researcher Edit Boundary
 
@@ -404,6 +409,7 @@ Changes:
    loop:
      max_epochs: 10
      test_every: 3
+     max_code_revisions: 5
    researcher:
      model: gpt-6-sol
      epoch_session_mode: fresh
@@ -574,11 +580,11 @@ Changes:
 4. Add researcher invocation command. V1 supports a fresh Codex session per
    invocation; a persistent session across epochs is future work.
 
-   The researcher uses the existing `CODEX_HOME` for `codex login` credentials,
-   including ChatGPT login, and an isolated `HOME`. It ignores user config and
-   does not forward `OPENAI_API_KEY` to Codex or child commands. Global
-   `CODEX_HOME` instructions and skills may still be discovered; the
-   researcher-specific instructions and skills are copied only into its
+   The researcher and verifier use a dedicated `CODEX_HOME` at
+   `~/.self-improvement-loop/codex`, authenticated separately with `codex login`.
+   They use an isolated `HOME`, ignore user config, and do not forward
+   `OPENAI_API_KEY` to Codex or child commands. Keep the dedicated profile free
+   of personal instructions and skills; researcher instructions are copied into its
    prepared workspace. The `codex exec` tool sandbox enforces the filesystem
    profile. Research notes are written directly; candidate recipe edits remain
    staged until verifier approval and promotion.
@@ -608,20 +614,21 @@ Changes:
 
    The verifier is always a fresh Codex invocation and has no session mode.
 
-6. Add verifier revision loop.
+6. Add candidate gate and revision loop.
 
    Flow:
 
    ```text
    researcher edits
    allowlist check
-   fresh verifier checks
-   if verifier fails:
-     send verifier result to same researcher epoch session
+   introspection check on staged recipe with a disposable runtime manifest
+   commit, wait for exact-commit image, run unscored startup smoke
+   fresh verifier checks only runnable candidates
+   if any gate fails:
+     send its diagnostics to the same researcher epoch session
      researcher revises
-     allowlist check
-     fresh verifier checks again
-   stop after max_revision_attempts
+     repeat the gates with a new candidate commit
+   stop at the independent code or verifier revision limit
    ```
 
 7. Add checkpoint candidate detection.

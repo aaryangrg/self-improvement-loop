@@ -15,6 +15,7 @@ class RunnerConfig:
     enable_eval: bool = True
     eval_judges: tuple[str, ...] = ("gpt-4.1",)
     eval_parallel: int = 2
+    eval_reasoning_effort: str = "low"
     cli_retries: int = 2
     download_retries: int = 2
     stream_reattaches: int = 2

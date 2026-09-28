@@ -198,6 +198,11 @@ trial as failed, even when the platform reports the run as completed.
 ## Start A Self-Improvement Run
 
 Reusable self-improvement settings live under `self-improvement-configs/`.
+The supplied configs pin the Harvey judge to `gpt-6-sol` at medium reasoning,
+the Codex researcher to `gpt-6-sol` at xhigh, and the fresh Codex verifier to
+`gpt-6-sol` at medium. The legal task agent remains on Claude Sonnet 4.6.
+Reasoning effort is required in each of the `evaluation`, `researcher`, and
+`verifier` config sections and is recorded with run metadata.
 
 Create the local run skeleton first:
 
@@ -352,6 +357,24 @@ the configured cadence and on the final epoch. Results live under
 `results/self-improvement/<run-id>/`. A failure stops the loop with its files
 available for inspection; automatic resume is not implemented.
 
+`self-improve start` also launches a read-only Streamlit dashboard bound to
+`127.0.0.1` and prints its URL before the baseline begins. It reads local
+`results/self-improvement/` files and refreshes every three seconds; it does not
+upload results or control the run. To inspect previous runs without starting an
+experiment:
+
+```bash
+uv run python -m runner self-improve ui --run-id run-001
+```
+
+The dashboard shows task and rubric pass rates, live trial states, researcher
+and verifier decisions, Introspection-reported generation cost, and Codex token
+usage. New GPT-6 Sol evaluations record each judge response's token usage in
+`evaluation/judge_usage.json`; the dashboard estimates judge cost using published
+standard API rates. Older runs have no judge-usage history, and ChatGPT-signed-in
+Codex usage is shown as tokens rather than a dollar charge. Stop the runner with
+Ctrl-C; the local dashboard remains available for inspection.
+
 The researcher can also be invoked separately after a train epoch completes. It reads
 the original train epoch results, including Harvey `scores.json` feedback, and
 the original baseline recipe. It writes research notes directly under the run's
@@ -375,12 +398,21 @@ The researcher and verifier models are required in the self-improvement config
 and pinned in the run metadata at bootstrap. Neither role falls back to your
 personal Codex model setting.
 
-The subprocess reuses the existing `codex login` credentials in `CODEX_HOME`,
-including ChatGPT login; it does not require or pass `OPENAI_API_KEY`. It ignores
-user Codex configuration and uses an isolated `HOME`, but global instructions
-and skills in `CODEX_HOME` may still be discovered. The researcher-only
-`AGENTS.md` and skills are copied into its prepared workspace; they are not
-installed at the repository root.
+The researcher and verifier use `~/.self-improvement-loop/codex` as a dedicated
+`CODEX_HOME`, separate from your personal Codex profile and from the run's
+isolated `HOME`. `self-improve start` checks this profile before bootstrap and
+opens Codex sign-in if needed when run in a terminal. For non-interactive runs,
+authenticate this profile first with your ChatGPT account:
+
+```bash
+CODEX_HOME="$HOME/.self-improvement-loop/codex" ./node_modules/.bin/codex login
+```
+
+The subprocess does not require or pass `OPENAI_API_KEY`, and does not copy
+credentials into `results/`. Keep this dedicated profile free of personal
+`AGENTS.md` files and skills. The researcher-only `AGENTS.md` and skills are
+copied into its prepared workspace; they are not installed at the repository
+root. The verifier has its own instructions in `verifier/AGENTS.md`.
 
 The pinned CLI's actual `codex exec` path was smoke-tested with this profile:
 allowed reads and writes succeeded, while a read outside the permitted paths and a

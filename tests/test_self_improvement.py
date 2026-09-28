@@ -33,10 +33,14 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                 "split_config: experiment_configs/smoke_split.yaml\n"
                 "evaluation:\n"
                 "  judges: [gpt-6-sol]\n"
+                "  reasoning_effort: medium\n"
             )
             for roles, missing in (
                 ("researcher: {}\nverifier:\n  model: gpt-6-sol\n", "researcher.model"),
-                ("researcher:\n  model: gpt-6-sol\nverifier: {}\n", "verifier.model"),
+                (
+                    "researcher:\n  model: gpt-6-sol\n  reasoning_effort: xhigh\nverifier: {}\n",
+                    "verifier.model",
+                ),
                 (
                     "researcher:\n  model: '  '\nverifier:\n  model: gpt-6-sol\n",
                     "researcher.model",
@@ -46,6 +50,30 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                     config_path.write_text(base + roles, encoding="utf-8")
                     with self.assertRaisesRegex(ValueError, missing.replace(".", r"\.")):
                         load_self_improvement_config(config_path)
+
+    def test_reasoning_effort_is_required_and_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.yaml"
+            base = (
+                "id: smoke\nseed_recipe: recipes/legal-agent\n"
+                "split_config: experiment_configs/smoke_split.yaml\n"
+                "evaluation:\n  judges: [gpt-6-sol]\n  reasoning_effort: medium\n"
+                "researcher:\n  model: gpt-6-sol\n  reasoning_effort: xhigh\n"
+                "verifier:\n  model: gpt-6-sol\n  reasoning_effort: medium\n"
+            )
+            for text, missing in (
+                (base.replace("  reasoning_effort: medium\n", "", 1), "evaluation"),
+                (base.replace("  reasoning_effort: xhigh\n", ""), "researcher"),
+                (base.rsplit("  reasoning_effort: medium\n", 1)[0], "verifier"),
+                (
+                    base.replace("  reasoning_effort: xhigh\n", "  reasoning_effort: invalid\n"),
+                    "researcher",
+                ),
+            ):
+                with self.subTest(missing=missing):
+                    path.write_text(text, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, f"{missing}\\.reasoning_effort"):
+                        load_self_improvement_config(path)
 
     def test_generate_run_id_uses_utc_timestamp_with_microseconds(self) -> None:
         run_id = generate_run_id(datetime(2026, 9, 27, 9, 5, 12, 345678, tzinfo=UTC))
@@ -78,12 +106,15 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                         "  test_every: 1",
                         "evaluation:",
                         "  judges: [gpt-6-sol]",
+                        "  reasoning_effort: medium",
                         "  parallel: 1",
                         "researcher:",
                         "  model: gpt-6-sol",
+                        "  reasoning_effort: xhigh",
                         "  epoch_session_mode: fresh",
                         "verifier:",
                         "  model: gpt-6-sol",
+                        "  reasoning_effort: medium",
                         "  enabled: true",
                         "  max_revision_attempts: 2",
                     ]
@@ -94,7 +125,10 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
 
             config = load_self_improvement_config(config_path)
             self.assertEqual(config.researcher.model, "gpt-6-sol")
+            self.assertEqual(config.researcher.reasoning_effort, "xhigh")
             self.assertEqual(config.verifier.model, "gpt-6-sol")
+            self.assertEqual(config.verifier.reasoning_effort, "medium")
+            self.assertEqual(config.evaluation.reasoning_effort, "medium")
             run = bootstrap_run(repo_root, config_path, config, "run-001")
 
             self.assertEqual(run.run_id, "run-001")
@@ -102,6 +136,7 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                 (run.results_dir / "metadata" / "run.json").read_text(encoding="utf-8")
             )["config"]
             self.assertEqual(stored_config["researcher"]["model"], "gpt-6-sol")
+            self.assertEqual(stored_config["researcher"]["reasoning_effort"], "xhigh")
             self.assertEqual(stored_config["verifier"]["model"], "gpt-6-sol")
             self.assertEqual(
                 run.working_recipe,
@@ -168,11 +203,14 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                         "split_config: experiment_configs/smoke_split.yaml",
                         "evaluation:",
                         "  judges: [gpt-6-sol]",
+                        "  reasoning_effort: medium",
                         "  parallel: 1",
                         "researcher:",
                         "  model: gpt-6-sol",
+                        "  reasoning_effort: xhigh",
                         "verifier:",
                         "  model: gpt-6-sol",
+                        "  reasoning_effort: medium",
                     ]
                 )
                 + "\n",
@@ -232,11 +270,14 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                         "split_config: experiment_configs/smoke_split.yaml",
                         "evaluation:",
                         "  judges: [gpt-6-sol]",
+                        "  reasoning_effort: medium",
                         "  parallel: 1",
                         "researcher:",
                         "  model: gpt-6-sol",
+                        "  reasoning_effort: xhigh",
                         "verifier:",
                         "  model: gpt-6-sol",
+                        "  reasoning_effort: medium",
                     ]
                 )
                 + "\n",
@@ -295,6 +336,7 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
             self.assertFalse(train_call.kwargs["include_split_subdir"])
             self.assertFalse(test_call.kwargs["include_split_subdir"])
             self.assertEqual(train_call.kwargs["runner_config"].eval_judges, ("gpt-6-sol",))
+            self.assertEqual(train_call.kwargs["runner_config"].eval_reasoning_effort, "medium")
             self.assertEqual(train_call.kwargs["runner_config"].eval_parallel, 1)
             self.assertEqual(
                 json.loads(
@@ -307,8 +349,22 @@ class SelfImprovementBootstrapTest(unittest.TestCase):
                         / "evaluation.json"
                     ).read_text(encoding="utf-8")
                 ),
-                {"judges": ["gpt-6-sol"], "parallel": 1},
+                {"judges": ["gpt-6-sol"], "parallel": 1, "reasoning_effort": "medium"},
             )
+
+            changed_config = config_path.read_text(encoding="utf-8").replace(
+                "reasoning_effort: medium", "reasoning_effort: high", 1
+            )
+            config_path.write_text(changed_config, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "differs from the pinned settings"):
+                run_epoch_split(
+                    repo_root=repo_root,
+                    config=load_self_improvement_config(config_path),
+                    run_id="run-001",
+                    epoch=4,
+                    split_kind="train",
+                    runner_config=runner_config,
+                )
 
             changed_config = config_path.read_text(encoding="utf-8").replace("gpt-6-sol", "gpt-4.1")
             config_path.write_text(changed_config, encoding="utf-8")

@@ -6,17 +6,21 @@ split_config: experiment_configs/smoke_split.yaml
 
 evaluation:
   judges: [gpt-6-sol]
+  reasoning_effort: medium
   parallel: 1
 
 loop:
   max_epochs: 2
   test_every: 1
+  max_code_revisions: 5
 
 researcher:
   model: gpt-6-sol
+  reasoning_effort: xhigh
   epoch_session_mode: fresh
 
 verifier:
   model: gpt-6-sol
+  reasoning_effort: medium
   enabled: true
   max_revision_attempts: 2

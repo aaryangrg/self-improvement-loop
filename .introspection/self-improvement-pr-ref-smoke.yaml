@@ -1,5 +1,0 @@
-name: self-improvement-pr-ref-smoke
-path: recipes/self-improvement/pr-ref-smoke/legal-agent
-description: Self-improvement working recipe for pr-ref-smoke.
-runtime:
-  llm_mode: managed

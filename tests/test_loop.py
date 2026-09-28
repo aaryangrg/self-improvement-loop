@@ -43,6 +43,95 @@ class FakeClient:
 
 
 class LoopTest(unittest.TestCase):
+    def test_no_edit_revises_same_candidate_before_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            artifact = root / "metadata" / "researcher" / "epoch-001"
+            artifact.mkdir(parents=True)
+            metadata_path = artifact / "run.json"
+            metadata_path.write_text(json.dumps({"status": "needs_recipe_edit"}))
+            config = SelfImprovementConfig(
+                id="test",
+                description="",
+                seed_recipe=Path("recipe"),
+                split_config=Path("split"),
+                loop=LoopConfig(max_code_revisions=2),
+                evaluation=EvaluationConfig(judges=("gpt-6-sol",)),
+                researcher=ResearcherConfig(model="gpt-6-sol"),
+                verifier=VerifierConfig(model="gpt-6-sol", enabled=False),
+            )
+
+            def revise(*args: object) -> None:
+                feedback = json.loads(Path(args[3]).read_text())
+                self.assertEqual(feedback["phase"], "no_recipe_edit")
+                metadata_path.write_text(json.dumps({"status": "pending_verification"}))
+
+            runtime = type(
+                "Runtime",
+                (),
+                {
+                    "runtime_id": "runtime-1",
+                    "manifest": ".introspection/run-001.yaml",
+                    "working_recipe": "recipe",
+                    "pr_ref": "pr/7",
+                    "pr_branch": "branch",
+                },
+            )()
+
+            class Git:
+                def commit_paths(self, *args: object) -> str:
+                    return "commit-1"
+
+                def push_branch(self, branch: str) -> None:
+                    return None
+
+            class Intro:
+                def pin_runtime_version(self, version: str) -> None:
+                    return None
+
+            with (
+                patch("runner.loop.run_researcher", return_value=artifact),
+                patch("runner.loop.revise_researcher", side_effect=revise) as revise_mock,
+                patch("runner.loop.check_candidate") as check,
+                patch("runner.loop.promote_candidate"),
+                patch("runner.loop.wait_for_ready_version", return_value="version-1"),
+                patch("runner.loop.smoke_candidate"),
+                patch("runner.loop.load_runtime_metadata", return_value=runtime),
+                patch("runner.loop.candidate_commit_paths", return_value=("recipe",)),
+                patch("runner.loop.record_candidate"),
+            ):
+                version = review_and_promote(root, "run-001", 1, config, Git(), Intro())
+
+            self.assertEqual(version, "version-1")
+            self.assertEqual(revise_mock.call_count, 1)
+            self.assertEqual(check.call_count, 1)
+
+    def test_no_edit_stops_after_code_revision_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            artifact = root / "metadata" / "researcher" / "epoch-001"
+            artifact.mkdir(parents=True)
+            (artifact / "run.json").write_text(json.dumps({"status": "needs_recipe_edit"}))
+            config = SelfImprovementConfig(
+                id="test",
+                description="",
+                seed_recipe=Path("recipe"),
+                split_config=Path("split"),
+                loop=LoopConfig(max_code_revisions=2),
+                evaluation=EvaluationConfig(judges=("gpt-6-sol",)),
+                researcher=ResearcherConfig(model="gpt-6-sol"),
+                verifier=VerifierConfig(model="gpt-6-sol", enabled=False),
+            )
+            with (
+                patch("runner.loop.run_researcher", return_value=artifact),
+                patch("runner.loop.revise_researcher") as revise,
+                patch("runner.loop.check_candidate") as check,
+                self.assertRaisesRegex(RuntimeError, "no recipe change after 2"),
+            ):
+                review_and_promote(root, "run-001", 1, config, object(), object())
+            self.assertEqual(revise.call_count, 2)
+            check.assert_not_called()
+
     def test_start_runs_baseline_and_configured_epochs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -58,10 +147,10 @@ class LoopTest(unittest.TestCase):
                 "id: smoke\n"
                 "seed_recipe: recipes/legal-agent\n"
                 "split_config: experiment_configs/smoke.yaml\n"
-                "evaluation:\n  judges: [gpt-6-sol]\n"
+                "evaluation:\n  judges: [gpt-6-sol]\n  reasoning_effort: medium\n"
                 "loop:\n  max_epochs: 2\n  test_every: 3\n"
-                "researcher:\n  model: gpt-6-sol\n"
-                "verifier:\n  model: gpt-6-sol\n",
+                "researcher:\n  model: gpt-6-sol\n  reasoning_effort: xhigh\n"
+                "verifier:\n  model: gpt-6-sol\n  reasoning_effort: medium\n",
                 encoding="utf-8",
             )
 
@@ -100,9 +189,10 @@ class LoopTest(unittest.TestCase):
                     return {"id": runtime_id}
 
             with (
+                patch("runner.loop.ensure_codex_login") as login,
+                patch("runner.loop.start_dashboard", return_value="http://127.0.0.1:8501/") as ui,
                 patch("runner.loop.run_epoch_split") as run_split,
-                patch("runner.loop.review_and_promote", side_effect=[True, False]),
-                patch("runner.loop.wait_for_ready_version", return_value="runtime-candidate"),
+                patch("runner.loop.review_and_promote", side_effect=["runtime-candidate", None]),
                 patch("runner.loop.refresh_metrics"),
                 patch(
                     "runner.loop.update_best_candidate",
@@ -114,6 +204,8 @@ class LoopTest(unittest.TestCase):
             ):
                 result = start_loop(root, config, "run-001", client=FakeIntro(), git_ops=FakeGit())
 
+            login.assert_called_once_with(root.resolve())
+            ui.assert_called_once_with(root.resolve(), "run-001")
             self.assertEqual(result, root.resolve() / "results" / "self-improvement" / "run-001")
             calls = [
                 (call.args[3], call.args[4], call.args[5].runtime_id)
@@ -134,6 +226,17 @@ class LoopTest(unittest.TestCase):
         version = wait_for_ready_version(FakeClient(), "runtime", "wanted", "pr/7", 1, 0)
         self.assertEqual(version, "new")
 
+    def test_wait_reports_recipe_validation_diagnostics(self) -> None:
+        class InvalidClient(FakeClient):
+            def get_recipe(self, recipe_id: str) -> dict[str, Any]:
+                return {
+                    "git_commit_sha": "wanted",
+                    "validation": {"status": "invalid", "diagnostics": ["unknown tool"]},
+                }
+
+        with self.assertRaisesRegex(RuntimeError, "unknown tool"):
+            wait_for_ready_version(InvalidClient(), "runtime", "wanted", "pr/7", 1, 0)
+
     def test_verifier_rejection_resumes_researcher_then_promotes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -151,21 +254,75 @@ class LoopTest(unittest.TestCase):
                 description="",
                 seed_recipe=Path("recipe"),
                 split_config=Path("split"),
-                loop=LoopConfig(),
+                loop=LoopConfig(max_code_revisions=3),
                 evaluation=EvaluationConfig(judges=("gpt-6-sol",)),
                 researcher=ResearcherConfig(model="gpt-6-sol"),
                 verifier=VerifierConfig(model="gpt-6-sol", max_revision_attempts=1),
             )
             with (
                 patch("runner.loop.run_researcher", return_value=artifact),
+                patch(
+                    "runner.loop.check_candidate",
+                    side_effect=[RuntimeError("invalid manifest"), None, None, None, None],
+                ) as check,
                 patch("runner.loop.run_verifier", side_effect=[rejected, approved]) as verify,
                 patch("runner.loop.revise_researcher") as revise,
                 patch("runner.loop.promote_candidate") as promote,
+                patch(
+                    "runner.loop.wait_for_ready_version",
+                    side_effect=[
+                        RuntimeError("image build failed"),
+                        "version-1",
+                        "version-2",
+                        "version-3",
+                    ],
+                ),
+                patch(
+                    "runner.loop.smoke_candidate",
+                    side_effect=[RuntimeError("startup failed"), None, None],
+                ) as smoke,
+                patch("runner.loop.load_runtime_metadata") as runtime,
+                patch("runner.loop.record_pr") as record_pr,
+                patch("runner.loop.candidate_commit_paths", return_value=("recipe",)),
+                patch("runner.loop.record_candidate"),
             ):
-                self.assertTrue(review_and_promote(root, "run-001", 1, config))
+                runtime.return_value = type(
+                    "Runtime",
+                    (),
+                    {
+                        "runtime_id": "runtime-1",
+                        "manifest": ".introspection/run-001.yaml",
+                        "working_recipe": "recipe",
+                        "pr_ref": "pr/7",
+                        "pr_branch": "branch",
+                        "candidate_commit": None,
+                    },
+                )()
+                record_pr.return_value = runtime.return_value
+
+                class Git:
+                    def commit_paths(self, *args: object) -> str:
+                        return "commit-1"
+
+                    def push_branch(self, branch: str) -> None:
+                        return None
+
+                class Intro:
+                    def pin_runtime_version(self, version: str) -> None:
+                        return None
+
+                self.assertEqual(
+                    review_and_promote(root, "run-001", 1, config, Git(), Intro()), "version-3"
+                )
+            self.assertEqual(check.call_count, 5)
             self.assertEqual(verify.call_count, 2)
-            revise.assert_called_once_with(root, "run-001", 1, rejected)
-            promote.assert_called_once_with(root, "run-001", 1, require_verifier=True)
+            self.assertEqual(revise.call_count, 4)
+            phases = [
+                json.loads(call.args[3].read_text()).get("phase") for call in revise.call_args_list
+            ]
+            self.assertEqual(phases[:3], ["check", "build", "smoke"])
+            promote.assert_called_with(root, "run-001", 1, require_verifier=False)
+            self.assertEqual(smoke.call_count, 3)
 
 
 if __name__ == "__main__":

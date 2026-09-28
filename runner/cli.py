@@ -7,6 +7,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
 from .config import RunnerConfig
+from .dashboard import start_dashboard
 from .execute import run_one
 from .experiment import IncompleteExperimentError, run_experiment
 from .git_ops import GitOps
@@ -152,6 +153,9 @@ def main() -> int:
     start_parser = self_improve_subparsers.add_parser("start")
     start_parser.add_argument("--config", type=Path, required=True)
     start_parser.add_argument("--run-id", default=None)
+
+    ui_parser = self_improve_subparsers.add_parser("ui")
+    ui_parser.add_argument("--run-id", default=None)
 
     args = parser.parse_args()
     if args.command == "run-one":
@@ -382,6 +386,9 @@ def main() -> int:
             return 0
         if args.self_improve_command == "start":
             print(start_loop(Path("."), args.config, args.run_id))
+            return 0
+        if args.self_improve_command == "ui":
+            print(start_dashboard(Path(".").resolve(), args.run_id))
             return 0
         raise AssertionError(f"unhandled self-improve command {args.self_improve_command}")
     raise AssertionError(f"unhandled command {args.command}")
