@@ -190,10 +190,13 @@ error files the runner could recover, but they do not enter task or split pass
 rate calculations. Aggregates report both `number_of_scored_trials` and
 `number_of_failed_trials`, plus task coverage fields:
 `number_of_evaluated_tasks` and `number_of_unevaluated_tasks`.
-The command exits nonzero if any expected trial remains unscored or any task is
-unevaluated; `aggregate.json` and recovered trial files remain available for
-diagnosis. A failed root agent span in the Introspection trace also marks the
-trial as failed, even when the platform reports the run as completed.
+If fewer than half of the tasks have a score after the first pass, each
+unevaluated task gets one additional execution attempt. Failed attempts and
+their traces remain in separate trial directories. The split continues even
+if task coverage is still partial; `progress.json` marks it `incomplete`, and
+the aggregate scores reflect only scored trials. A failed root agent span in
+the Introspection trace marks that attempt as failed, even when the platform
+reports its run as completed.
 
 ## Start A Self-Improvement Run
 

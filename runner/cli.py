@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
 from .config import RunnerConfig
 from .dashboard import start_dashboard
 from .execute import run_one
-from .experiment import IncompleteExperimentError, run_experiment
+from .experiment import run_experiment
 from .git_ops import GitOps
 from .introspection import IntrospectionClient
 from .loop import start_loop
@@ -186,17 +185,13 @@ def main() -> int:
             eval_judges=tuple(args.eval_judges),
             eval_parallel=args.eval_parallel,
         )
-        try:
-            run_dir = run_experiment(
-                config_path=args.config,
-                split=args.split,
-                runner_config=config,
-                experiment_run_id=args.experiment_run_id,
-                results_root=args.results_root,
-            )
-        except IncompleteExperimentError as error:
-            print(error, file=sys.stderr)
-            return 1
+        run_dir = run_experiment(
+            config_path=args.config,
+            split=args.split,
+            runner_config=config,
+            experiment_run_id=args.experiment_run_id,
+            results_root=args.results_root,
+        )
         print(run_dir)
         return 0
     if args.command == "self-improve":
@@ -344,18 +339,14 @@ def main() -> int:
                 agent=args.agent,
             )
             config = runner_config_with_runtime_metadata(Path("."), args.run_id, config)
-            try:
-                epoch_dir = run_epoch_split(
-                    repo_root=Path("."),
-                    config=self_improvement_config,
-                    run_id=args.run_id,
-                    epoch=args.epoch,
-                    split_kind="train" if args.self_improve_command == "run-train" else "test",
-                    runner_config=config,
-                )
-            except IncompleteExperimentError as error:
-                print(error, file=sys.stderr)
-                return 1
+            epoch_dir = run_epoch_split(
+                repo_root=Path("."),
+                config=self_improvement_config,
+                run_id=args.run_id,
+                epoch=args.epoch,
+                split_kind="train" if args.self_improve_command == "run-train" else "test",
+                runner_config=config,
+            )
             print(epoch_dir)
             return 0
         if args.self_improve_command == "refresh-metrics":

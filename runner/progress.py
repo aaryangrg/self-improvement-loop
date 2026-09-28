@@ -63,6 +63,12 @@ class SplitProgress:
             self.payload["updated_at"] = _now()
             write_atomic_json(self.path, self.payload)
 
+    def queue_trial(self, task_id: str, trial: int) -> None:
+        with self.lock:
+            self.payload["trials"].append({"task_id": task_id, "trial": trial, "status": "queued"})
+            self.payload["updated_at"] = _now()
+            write_atomic_json(self.path, self.payload)
+
     def finish(self, status: str) -> None:
         with self.lock:
             self.payload["status"] = status

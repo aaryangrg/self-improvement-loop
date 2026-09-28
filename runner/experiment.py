@@ -70,10 +70,6 @@ class TaskSummary:
     score_files: tuple[str, ...]
 
 
-class IncompleteExperimentError(RuntimeError):
-    pass
-
-
 def load_split_config(path: Path) -> SplitConfig:
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -181,6 +177,9 @@ def run_experiment(
     progress = SplitProgress(split_dir / "progress.json", split, jobs)
 
     trial_results: list[TrialResult] = []
+    scored_tasks: set[str] = set()
+    retry_scheduled = False
+    task_ids = split_config.splits[split].task_ids
     task_config = replace(runner_config, results_root=split_dir, enable_eval=False)
     eval_config = replace(runner_config, results_root=split_dir)
     with (
@@ -224,27 +223,35 @@ def run_experiment(
                         progress.set_trial(requested_task_id, requested_trial, completed.status)
                 else:
                     trial_results.append(result)
+                    if result.scored:
+                        scored_tasks.add(requested_task_id)
                     progress.set_trial(requested_task_id, requested_trial, result.status)
                 _write_json(
                     split_dir / "aggregate.json", build_aggregate(run_id, split, trial_results)
                 )
+            if (
+                not pending
+                and not retry_scheduled
+                and runner_config.enable_eval
+                and 2 * len(scored_tasks) < len(task_ids)
+            ):
+                retry_scheduled = True
+                retry_trial = split_config.defaults.trials_per_task + 1
+                for task_id in task_ids:
+                    if task_id in scored_tasks:
+                        continue
+                    progress.queue_trial(task_id, retry_trial)
+                    pending[
+                        task_pool.submit(
+                            _run_with_progress, progress, task_id, retry_trial, task_config
+                        )
+                    ] = ("task", task_id, retry_trial)
 
     aggregate = build_aggregate(run_id, split, trial_results)
     aggregate["finished_at"] = datetime.now(UTC).isoformat()
     _write_json(split_dir / "aggregate.json", aggregate)
-    if runner_config.enable_eval and (
-        not jobs
-        or aggregate["number_of_scored_trials"] != len(jobs)
-        or aggregate["number_of_evaluated_tasks"] != len(split_config.splits[split].task_ids)
-    ):
-        progress.finish("incomplete")
-        raise IncompleteExperimentError(
-            f"{split} incomplete: {aggregate['number_of_scored_trials']}/{len(jobs)} trials "
-            f"scored, {aggregate['number_of_evaluated_tasks']}/"
-            f"{len(split_config.splits[split].task_ids)} tasks evaluated. "
-            f"Results: {split_dir / 'aggregate.json'}"
-        )
-    progress.finish("completed")
+    complete = not runner_config.enable_eval or len(scored_tasks) == len(task_ids)
+    progress.finish("completed" if complete else "incomplete")
     return run_dir
 
 
