@@ -11,6 +11,13 @@ from runner.git_ops import GitOps
 
 
 class GitOpsTest(unittest.TestCase):
+    def test_update_pr_passes_multiline_body_without_shell_interpretation(self) -> None:
+        body = "## Experiment\n\nRun `run-001` starts from `recipes/legal-agent`."
+        with patch.object(GitOps, "_run") as run:
+            GitOps(Path(".")).update_pr_body(2, body)
+
+        run.assert_called_once_with(["gh", "pr", "edit", "2", "--body", body])
+
     def test_create_branch_requires_clean_worktree_and_switches_to_base(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_root = Path(temp_dir)

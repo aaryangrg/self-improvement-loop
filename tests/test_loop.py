@@ -67,12 +67,13 @@ class LoopTest(unittest.TestCase):
             verifier=VerifierConfig(model="gpt-6-sol"),
         )
 
-        title, body = draft_pr_details(config, "run-001")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            title, body = draft_pr_details(config, "run-001", Path(temp_dir))
 
         self.assertEqual(title, "Agent recipe experiment: smoke (run-001)")
         self.assertIn("`experiment_configs/smoke_split.yaml`", body)
         self.assertIn("research epochs", body)
-        self.assertIn("training evidence only", body)
+        self.assertIn("researcher sees training evidence", body)
 
     def test_resume_archives_incomplete_split_before_replaying(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -352,6 +353,7 @@ class LoopTest(unittest.TestCase):
                 patch("runner.loop.run_epoch_split") as run_split,
                 patch("runner.loop.review_and_promote", side_effect=["runtime-candidate", None]),
                 patch("runner.loop.refresh_metrics"),
+                patch("runner.loop._update_pr") as update_pr,
                 patch(
                     "runner.loop.update_best_candidate",
                     return_value={
@@ -366,6 +368,7 @@ class LoopTest(unittest.TestCase):
             ui.assert_called_once_with(root.resolve(), "run-001")
             self.assertEqual(result, root.resolve() / "results" / "self-improvement" / "run-001")
             self.assertEqual(git.messages, ["Initialize smoke recipe experiment (run-001)"])
+            self.assertEqual(update_pr.call_count, 3)
             calls = [
                 (call.args[3], call.args[4], call.args[5].runtime_id)
                 for call in run_split.call_args_list

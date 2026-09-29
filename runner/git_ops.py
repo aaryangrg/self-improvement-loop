@@ -80,6 +80,9 @@ class GitOps:
             branch=branch,
         )
 
+    def update_pr_body(self, number: int, body: str) -> None:
+        self._run(["gh", "pr", "edit", str(number), "--body", body])
+
     def commit_paths(
         self,
         paths: tuple[str, ...],

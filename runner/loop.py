@@ -12,6 +12,7 @@ from .config import RunnerConfig
 from .dashboard import start_dashboard
 from .git_ops import GitOps
 from .introspection import IntrospectionClient
+from .pr_summary import render_pr_body
 from .progress import write_run_progress
 from .researcher import ensure_codex_login, recover_researcher, revise_researcher, run_researcher
 from .self_improvement import (
@@ -80,22 +81,22 @@ def wait_for_ready_version(
         time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
 
 
-def draft_pr_details(config: SelfImprovementConfig, run_id: str) -> tuple[str, str]:
+def draft_pr_details(
+    config: SelfImprovementConfig, run_id: str, results_dir: Path
+) -> tuple[str, str]:
     title = f"Agent recipe experiment: {config.id} ({run_id})"
-    body = (
-        "## Experiment\n\n"
-        f"Automated recipe improvement from `{config.seed_recipe}` using "
-        f"`{config.split_config}`. Run ID: `{run_id}`.\n\n"
-        f"The loop allows {config.loop.max_epochs} research epochs and evaluates the "
-        f"held-out split every {config.loop.test_every} epoch(s), plus baseline. "
-        "The researcher sees training evidence only.\n\n"
-        "## Review notes\n\n"
-        "This draft PR pins staging runtime builds to the candidate branch. "
-        "Candidate commits are validated and reviewed before scoring; results "
-        "are recorded locally. Add the final train/test scores and a concise "
-        "change summary before treating this as a performance improvement.\n"
-    )
-    return title, body
+    return title, render_pr_body(config, run_id, results_dir)
+
+
+def _update_pr(repo_root: Path, config: SelfImprovementConfig, run_id: str, git: GitOps) -> None:
+    runtime = load_runtime_metadata(repo_root, run_id)
+    if runtime.pr_number is None:
+        return
+    body = render_pr_body(config, run_id, repo_root / "results" / "self-improvement" / run_id)
+    try:
+        git.update_pr_body(runtime.pr_number, body)
+    except RuntimeError as error:
+        print(f"Warning: could not refresh PR #{runtime.pr_number}: {error}", flush=True)
 
 
 def review_and_promote(
@@ -168,7 +169,9 @@ def review_and_promote(
             runtime_id = runtime.runtime_id
             git.push_branch(runtime.pr_branch)
             if runtime.pr_ref is None:
-                title, body = draft_pr_details(config, run_id)
+                title, body = draft_pr_details(
+                    config, run_id, repo_root / "results" / "self-improvement" / run_id
+                )
                 pr = git.open_draft_pr(
                     runtime.pr_branch,
                     "main",
@@ -320,9 +323,11 @@ def _execute_loop(
         best = update_best_candidate(repo_root, run_id)
         if best["is_new_best"] and best["best_epoch"] == epoch and version_id is not None:
             _record_checkpoint(run.results_dir, best, load_runtime_metadata(repo_root, run_id))
+        _update_pr(repo_root, config, run_id, git)
     write_run_progress(
         run.results_dir, epoch=config.loop.max_epochs, phase="complete", status="completed"
     )
+    _update_pr(repo_root, config, run_id, git)
     return run.results_dir
 
 
@@ -444,9 +449,11 @@ def _resume_epochs(
         best = update_best_candidate(repo_root, run_id)
         if best["is_new_best"] and best["best_epoch"] == epoch and version_id is not None:
             _record_checkpoint(results_dir, best, load_runtime_metadata(repo_root, run_id))
+        _update_pr(repo_root, config, run_id, git)
     write_run_progress(
         results_dir, epoch=config.loop.max_epochs, phase="complete", status="completed"
     )
+    _update_pr(repo_root, config, run_id, git)
 
 
 def _split_finished(path: Path) -> bool:
