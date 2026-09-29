@@ -225,7 +225,7 @@ def _render(data: dict[str, Any]) -> None:
     if data["timeline"]:
         for entry in reversed(data["timeline"]):
             result = entry["result"]
-            summary = result.get("summary", "No summary")
+            summary = result.get("summary") or result.get("hypothesis") or "No summary"
             state = result.get("verdict", result.get("status", "completed"))
             st.markdown(
                 f'<div class="timeline-entry"><strong>{entry["epoch"]} · '
@@ -233,8 +233,12 @@ def _render(data: dict[str, Any]) -> None:
                 f"{escape(str(summary))}</div>",
                 unsafe_allow_html=True,
             )
-            if result.get("hypothesis"):
+            if result.get("hypothesis") and result.get("summary"):
                 st.caption(f"Hypothesis: {result['hypothesis']}")
+            for change in result.get("changes_made", []):
+                st.caption(f"Change: {change}")
+            if result.get("expected_outcome"):
+                st.caption(f"Expected: {result['expected_outcome']}")
             if result.get("issues"):
                 st.caption(f"Issues: {result['issues']}")
     else:

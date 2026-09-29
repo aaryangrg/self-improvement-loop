@@ -9,7 +9,6 @@ defaults:
 splits:
   train:
     task_ids:
-      - trusts-estates-private-client/compare-trust-documents-against-client-instructions
       - litigation-dispute-resolution/identify-issues-in-counterparty-complaint
   test:
     task_ids:

@@ -11,7 +11,7 @@ from .execute import run_one
 from .experiment import run_experiment
 from .git_ops import GitOps
 from .introspection import IntrospectionClient
-from .loop import start_loop
+from .loop import resume_loop, start_loop
 from .researcher import prepare_research_workspace, run_researcher
 from .self_improvement import (
     bootstrap_run,
@@ -152,6 +152,9 @@ def main() -> int:
     start_parser = self_improve_subparsers.add_parser("start")
     start_parser.add_argument("--config", type=Path, required=True)
     start_parser.add_argument("--run-id", default=None)
+
+    resume_parser = self_improve_subparsers.add_parser("resume")
+    resume_parser.add_argument("--run-id", required=True)
 
     ui_parser = self_improve_subparsers.add_parser("ui")
     ui_parser.add_argument("--run-id", default=None)
@@ -377,6 +380,9 @@ def main() -> int:
             return 0
         if args.self_improve_command == "start":
             print(start_loop(Path("."), args.config, args.run_id))
+            return 0
+        if args.self_improve_command == "resume":
+            print(resume_loop(Path("."), args.run_id))
             return 0
         if args.self_improve_command == "ui":
             print(start_dashboard(Path(".").resolve(), args.run_id))

@@ -358,7 +358,16 @@ limit. Approved edits are promoted, committed on the run's PR branch, matched
 to a ready Introspection version by Git SHA, and evaluated. Test runs occur at
 the configured cadence and on the final epoch. Results live under
 `results/self-improvement/<run-id>/`. A failure stops the loop with its files
-available for inspection; automatic resume is not implemented.
+available for inspection. To continue a stopped run, use:
+
+```bash
+uv run python -m runner self-improve resume --run-id <run-id>
+```
+
+Resume skips completed splits, replays unfinished splits while archiving their
+partial results under `metadata/replays/`, and reuses a completed researcher
+edit when verification has not started. It stops for manual inspection if a
+candidate gate may already have committed or deployed changes.
 
 `self-improve start` also launches a read-only Streamlit dashboard bound to
 `127.0.0.1` and prints its URL before the baseline begins. It reads local

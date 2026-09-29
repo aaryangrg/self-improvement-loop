@@ -7,14 +7,25 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from runner.config import RunnerConfig
 from runner.git_ops import PullRequestInfo
-from runner.loop import review_and_promote, start_loop, wait_for_ready_version
+from runner.loop import (
+    _resume_split,
+    resume_loop,
+    review_and_promote,
+    start_loop,
+    wait_for_ready_version,
+)
 from runner.self_improvement import (
     EvaluationConfig,
     LoopConfig,
     ResearcherConfig,
+    RuntimeMetadata,
     SelfImprovementConfig,
     VerifierConfig,
+    bootstrap_run,
+    load_self_improvement_config,
+    write_runtime_metadata,
 )
 
 
@@ -43,6 +54,126 @@ class FakeClient:
 
 
 class LoopTest(unittest.TestCase):
+    def test_resume_archives_incomplete_split_before_replaying(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            old = root / "results" / "self-improvement" / "run-001" / "epochs" / "epoch-001"
+            old.mkdir(parents=True)
+            (old / "partial.txt").write_text("old task", encoding="utf-8")
+            config = SelfImprovementConfig(
+                id="smoke",
+                description="",
+                seed_recipe=Path("recipe"),
+                split_config=Path("split"),
+                loop=LoopConfig(),
+                evaluation=EvaluationConfig(judges=("gpt-6-sol",)),
+                researcher=ResearcherConfig(model="gpt-6-sol"),
+                verifier=VerifierConfig(model="gpt-6-sol"),
+            )
+
+            def replay(*args: object) -> None:
+                old.mkdir()
+                (old / "fresh.txt").write_text("new task", encoding="utf-8")
+
+            with patch("runner.loop.run_epoch_split", side_effect=replay) as run_epoch:
+                _resume_split(root, config, "run-001", 1, "train", RunnerConfig(repo_root=root))
+
+            run_epoch.assert_called_once()
+            self.assertEqual((old / "fresh.txt").read_text(encoding="utf-8"), "new task")
+            archive = (
+                root
+                / "results"
+                / "self-improvement"
+                / "run-001"
+                / "metadata"
+                / "replays"
+                / "train"
+                / "epoch-001"
+                / "attempt-001"
+            )
+            self.assertEqual((archive / "partial.txt").read_text(encoding="utf-8"), "old task")
+
+    def test_resume_reuses_baseline_and_pinned_split(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            recipe = root / "recipes" / "legal-agent"
+            recipe.mkdir(parents=True)
+            (recipe / "SYSTEM.md").write_text("baseline\n", encoding="utf-8")
+            split = root / "experiment_configs" / "smoke.yaml"
+            split.parent.mkdir()
+            split.write_text("id: original\n", encoding="utf-8")
+            config_path = root / "self-improvement-configs" / "smoke.yaml"
+            config_path.parent.mkdir()
+            config_path.write_text(
+                "id: smoke\nseed_recipe: recipes/legal-agent\n"
+                "split_config: experiment_configs/smoke.yaml\n"
+                "evaluation:\n  judges: [gpt-6-sol]\n  reasoning_effort: medium\n"
+                "loop:\n  max_epochs: 1\n  test_every: 1\n"
+                "researcher:\n  model: gpt-6-sol\n  reasoning_effort: xhigh\n"
+                "verifier:\n  model: gpt-6-sol\n  reasoning_effort: medium\n",
+                encoding="utf-8",
+            )
+            config = load_self_improvement_config(config_path)
+            run = bootstrap_run(root, config_path, config, "run-001")
+            write_runtime_metadata(
+                root,
+                RuntimeMetadata(
+                    run_id="run-001",
+                    runtime_name="self-improvement-run-001",
+                    environment="staging",
+                    manifest=str(run.manifest.relative_to(root)),
+                    working_recipe=str(run.working_recipe.relative_to(root)),
+                    runtime_id="baseline-version",
+                    pr_branch="self-improvement/run-001",
+                ),
+            )
+            pinned_split = run.results_dir / "metadata" / "split_config.yaml"
+            pinned_split.parent.mkdir(parents=True, exist_ok=True)
+            pinned_split.write_text("id: original\n", encoding="utf-8")
+            for parent in (run.results_dir / "epochs", run.results_dir / "test"):
+                epoch = parent / "epoch-000"
+                epoch.mkdir(exist_ok=True)
+                (epoch / "aggregate.json").write_text('{"task_pass_rate":0.5}')
+                (epoch / "progress.json").write_text('{"status":"completed"}')
+            split.write_text("id: changed\n", encoding="utf-8")
+
+            class Git:
+                def current_branch(self) -> str:
+                    return "self-improvement/run-001"
+
+                def ensure_clean_worktree(self) -> None:
+                    return None
+
+            def run_split(*args: Any, **kwargs: Any) -> Path:
+                epoch = kwargs.get("epoch", args[3] if len(args) > 3 else None)
+                kind = kwargs.get("split_kind", args[4] if len(args) > 4 else None)
+                target = (
+                    run.results_dir
+                    / ("epochs" if kind == "train" else "test")
+                    / f"epoch-{epoch:03d}"
+                )
+                target.mkdir(parents=True)
+                (target / "aggregate.json").write_text('{"task_pass_rate":0.5}')
+                (target / "progress.json").write_text('{"status":"completed"}')
+                return target
+
+            with (
+                patch("runner.loop.ensure_codex_login"),
+                patch("runner.loop.start_dashboard", return_value="http://127.0.0.1:8501/"),
+                patch("runner.loop.recover_researcher", return_value=run.results_dir / "metadata"),
+                patch("runner.loop.review_and_promote", return_value="candidate-version") as review,
+                patch("runner.loop.run_epoch_split", side_effect=run_split) as run_epoch,
+                patch("runner.loop.refresh_metrics"),
+                patch("runner.loop.update_best_candidate", return_value={"is_new_best": False}),
+            ):
+                resume_loop(root, "run-001", git_ops=Git(), client=object())
+
+            review.assert_called_once()
+            self.assertEqual(run_epoch.call_count, 2)
+            for call in run_epoch.call_args_list:
+                self.assertEqual(call.args[1].split_config, pinned_split.resolve())
+                self.assertEqual(call.args[3], 1)
+
     def test_no_edit_revises_same_candidate_before_verification(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

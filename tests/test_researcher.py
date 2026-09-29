@@ -15,6 +15,7 @@ from runner.researcher import (
     changed_paths,
     ensure_codex_login,
     prepare_research_workspace,
+    recover_researcher,
     revise_researcher,
     run_researcher,
     snapshot_paths,
@@ -258,26 +259,21 @@ class ResearcherWorkspaceTest(unittest.TestCase):
 
     def test_research_result_requires_expected_shape(self) -> None:
         valid = {
-            "status": "ready_for_review",
-            "summary": "Updated the recipe.",
             "hypothesis": "A general workflow improvement.",
-            "changes": [{"path": "recipe/SYSTEM.md", "reason": "Clarifies review steps."}],
-            "next_experiment": "Run the train split.",
+            "changes_made": ["Added a coverage check because reviews omitted source issues."],
+            "expected_outcome": "Fewer material omissions on the next train epoch.",
         }
 
         validate_research_result(valid)
 
         with self.assertRaises(ValueError):
             validate_research_result({**valid, "unmodeled": True})
-        with self.assertRaisesRegex(ValueError, "ready_for_review"):
-            validate_research_result({**valid, "status": "no_change"})
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "expected_outcome"):
             validate_research_result(
-                {
-                    **valid,
-                    "changes": [{"path": "../test/criteria.json", "reason": "Not allowed."}],
-                }
+                {key: value for key, value in valid.items() if key != "expected_outcome"}
             )
+        with self.assertRaisesRegex(ValueError, "changes_made"):
+            validate_research_result({**valid, "changes_made": [{"path": "recipe/SYSTEM.md"}]})
 
     def test_researcher_stages_recipe_and_writes_notes_directly(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -285,14 +281,9 @@ class ResearcherWorkspaceTest(unittest.TestCase):
             results = self.make_run(root)
             prepare_research_workspace(root, "run-001", 1)
             result = {
-                "status": "ready_for_review",
-                "summary": "Clarified the recipe.",
                 "hypothesis": "A general instruction will reduce omissions.",
-                "changes": [
-                    {"path": "recipe/SYSTEM.md", "reason": "Clarifies the workflow."},
-                    {"path": "workspace/journal.md", "reason": "Records the hypothesis."},
-                ],
-                "next_experiment": "Run the next train epoch.",
+                "changes_made": ["Clarified the workflow to cover all source issues."],
+                "expected_outcome": "Fewer omissions on the next train epoch.",
             }
 
             def fake_codex(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -345,11 +336,15 @@ class ResearcherWorkspaceTest(unittest.TestCase):
             self.assertEqual(run_metadata["model"], "gpt-6-sol")
             self.assertEqual(run_metadata["reasoning_effort"], "xhigh")
             self.assertEqual(run_metadata["status"], "pending_verification")
+            self.assertEqual(run_metadata["result"], result)
+            self.assertEqual(
+                run_metadata["changed_paths"], ["recipe/SYSTEM.md", "workspace/journal.md"]
+            )
             self.assertTrue((artifacts / "events.jsonl").is_file())
             with self.assertRaises(FileExistsError):
                 run_researcher(root, "run-001", 1)
 
-    def test_researcher_does_not_sync_unreported_changes(self) -> None:
+    def test_researcher_rejects_read_only_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             self.make_run(root)
@@ -360,28 +355,74 @@ class ResearcherWorkspaceTest(unittest.TestCase):
                 result_path.write_text(
                     json.dumps(
                         {
-                            "status": "ready_for_review",
-                            "summary": "No change.",
                             "hypothesis": "None.",
-                            "changes": [],
-                            "next_experiment": "None.",
+                            "changes_made": [],
+                            "expected_outcome": "None.",
                         }
                     ),
                     encoding="utf-8",
                 )
-                (Path(kwargs["cwd"]) / "recipe" / "SYSTEM.md").write_text(
-                    "unreported edit\n", encoding="utf-8"
-                )
+                (Path(kwargs["cwd"]) / "AGENTS.md").write_text("tampered\n", encoding="utf-8")
                 return subprocess.CompletedProcess(command, 0)
 
             with (
                 patch("runner.researcher.subprocess.run", side_effect=fake_codex),
-                self.assertRaisesRegex(ValueError, "do not match observed files"),
+                self.assertRaisesRegex(RuntimeError, "changed read-only paths"),
             ):
                 run_researcher(root, "run-001", 1)
 
             recipe = root / "recipes" / "self-improvement" / "run-001" / "legal-agent"
             self.assertEqual((recipe / "SYSTEM.md").read_text(encoding="utf-8"), "working prompt\n")
+
+    def test_recover_completed_researcher_without_reinvoking_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results = self.make_run(root)
+            workspace = prepare_research_workspace(root, "run-001", 1)
+            artifact = workspace.parent
+            (workspace / "recipe" / "SYSTEM.md").write_text("improved\n", encoding="utf-8")
+            (results / "workspace" / "journal.md").write_text("hypothesis\n", encoding="utf-8")
+            (artifact / "researcher_result.json").write_text(
+                json.dumps(
+                    {
+                        "status": "ready_for_review",
+                        "summary": "Added a coverage procedure.",
+                        "hypothesis": "A coverage procedure reduces omissions.",
+                        "changes": [
+                            {"path": "recipe/SYSTEM.md", "reason": "Added a coverage step."},
+                            {"path": "../workspace/journal.md", "reason": "Recorded evidence."},
+                        ],
+                        "next_experiment": "Check whether omissions decrease.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (artifact / "run.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "return_code": 0,
+                        "thread_id": "thread-123",
+                        "error": "researcher result contains disallowed path",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("runner.researcher.subprocess.run") as codex:
+                recovered = recover_researcher(root, "run-001", 1)
+
+            codex.assert_not_called()
+            self.assertEqual(recovered, artifact)
+            metadata = json.loads((artifact / "run.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["status"], "pending_verification")
+            self.assertEqual(
+                metadata["result"]["hypothesis"], "A coverage procedure reduces omissions."
+            )
+            self.assertEqual(metadata["result"]["changes_made"], ["Added a coverage step."])
+            self.assertEqual(
+                metadata["changed_paths"], ["recipe/SYSTEM.md", "workspace/journal.md"]
+            )
 
     def test_researcher_requests_revision_when_only_notes_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -394,13 +435,9 @@ class ResearcherWorkspaceTest(unittest.TestCase):
                 result_path.write_text(
                     json.dumps(
                         {
-                            "status": "ready_for_review",
-                            "summary": "Updated research notes.",
                             "hypothesis": "A general improvement could help.",
-                            "changes": [
-                                {"path": "workspace/journal.md", "reason": "Recorded analysis."}
-                            ],
-                            "next_experiment": "Run another epoch.",
+                            "changes_made": ["Recorded an alternative approach in research notes."],
+                            "expected_outcome": "No score change until the recipe is edited.",
                         }
                     ),
                     encoding="utf-8",
@@ -414,7 +451,7 @@ class ResearcherWorkspaceTest(unittest.TestCase):
             self.assertEqual(metadata["status"], "needs_recipe_edit")
             self.assertEqual(metadata["thread_id"], "thread-123")
 
-    def test_revision_resumes_same_thread_and_checks_reported_changes(self) -> None:
+    def test_revision_resumes_same_thread_and_checks_observed_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             results = self.make_run(root)
@@ -451,13 +488,9 @@ class ResearcherWorkspaceTest(unittest.TestCase):
                 Path(command[command.index("--output-last-message") + 1]).write_text(
                     json.dumps(
                         {
-                            "status": "ready_for_review",
-                            "summary": "Revised wording.",
                             "hypothesis": "General guidance improves completeness.",
-                            "changes": [
-                                {"path": "recipe/SYSTEM.md", "reason": "Removed sample wording."}
-                            ],
-                            "next_experiment": "Evaluate train split.",
+                            "changes_made": ["Removed sample-specific wording for generality."],
+                            "expected_outcome": "Improved issue coverage across tasks.",
                         }
                     ),
                     encoding="utf-8",
@@ -499,13 +532,9 @@ class ResearcherWorkspaceTest(unittest.TestCase):
                 Path(command[command.index("--output-last-message") + 1]).write_text(
                     json.dumps(
                         {
-                            "status": "ready_for_review",
-                            "summary": "Notes only.",
                             "hypothesis": "General improvement.",
-                            "changes": [
-                                {"path": "workspace/journal.md", "reason": "Recorded analysis."}
-                            ],
-                            "next_experiment": "Run another epoch.",
+                            "changes_made": ["Recorded the analysis without editing the recipe."],
+                            "expected_outcome": "No recipe effect yet.",
                         }
                     )
                 )
@@ -517,6 +546,48 @@ class ResearcherWorkspaceTest(unittest.TestCase):
             metadata = json.loads((artifact_dir / "run.json").read_text())
             self.assertEqual(metadata["status"], "needs_recipe_edit")
             self.assertEqual(metadata["revision_count"], 1)
+
+    def test_revision_rejects_read_only_workspace_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results = self.make_run(root)
+            workspace = prepare_research_workspace(root, "run-001", 1)
+            artifact_dir = workspace.parent
+            (artifact_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "status": "pending_verification",
+                        "thread_id": "thread-123",
+                        "candidate_snapshot": snapshot_paths(workspace / "recipe"),
+                        "notes_snapshot": snapshot_paths(results / "workspace"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            feedback = artifact_dir / "feedback.json"
+            feedback.write_text(json.dumps({"verdict": "reject"}), encoding="utf-8")
+
+            def fake_codex(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                (workspace / "AGENTS.md").write_text("tampered\n", encoding="utf-8")
+                Path(command[command.index("--output-last-message") + 1]).write_text(
+                    json.dumps(
+                        {
+                            "hypothesis": "General guidance improves coverage.",
+                            "changes_made": ["Clarified the instructions."],
+                            "expected_outcome": "Fewer omissions.",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0)
+
+            with (
+                patch("runner.researcher.subprocess.run", side_effect=fake_codex),
+                self.assertRaisesRegex(RuntimeError, "changed read-only paths"),
+            ):
+                revise_researcher(root, "run-001", 1, feedback)
+            metadata = json.loads((artifact_dir / "run.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["status"], "revision_failed")
 
     def test_invalid_revision_returns_to_candidate_check_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -545,13 +616,9 @@ class ResearcherWorkspaceTest(unittest.TestCase):
                 Path(command[command.index("--output-last-message") + 1]).write_text(
                     json.dumps(
                         {
-                            "status": "ready_for_review",
-                            "summary": "Changed agent YAML.",
                             "hypothesis": "A tool change might help.",
-                            "changes": [
-                                {"path": "recipe/agents/agent.yaml", "reason": "Change tools."}
-                            ],
-                            "next_experiment": "Run train split.",
+                            "changes_made": ["Changed tools to improve document parsing."],
+                            "expected_outcome": "More complete source extraction.",
                         }
                     )
                 )
@@ -589,11 +656,9 @@ class ResearcherWorkspaceTest(unittest.TestCase):
                 Path(command[command.index("--output-last-message") + 1]).write_text(
                     json.dumps(
                         {
-                            "status": "ready_for_review",
-                            "summary": "Repair startup.",
                             "hypothesis": "Fix extension.",
-                            "changes": [{"path": "recipe/SYSTEM.md", "reason": "Repair."}],
-                            "next_experiment": "Smoke again.",
+                            "changes_made": ["Repaired startup instructions."],
+                            "expected_outcome": "Startup smoke completes.",
                         }
                     )
                 )

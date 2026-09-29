@@ -15,7 +15,6 @@ from .recipe_candidate import stage_agent_configs
 from .self_improvement import load_runtime_metadata, validate_run_id
 
 RESEARCHER_ASSETS = Path(__file__).resolve().parents[1] / "researcher"
-ALLOWED_EDIT_ROOTS = {"recipe", "workspace"}
 
 
 def prepare_research_workspace(repo_root: Path, run_id: str, epoch: int) -> Path:
@@ -158,27 +157,90 @@ def changed_paths(root: Path, before: dict[str, str]) -> set[str]:
 def validate_research_result(payload: object) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("researcher result must be a JSON object")
-    expected = {"status", "summary", "hypothesis", "changes", "next_experiment"}
+    expected = {"hypothesis", "changes_made", "expected_outcome"}
     if payload.keys() != expected:
         raise ValueError(f"researcher result keys must be exactly: {', '.join(sorted(expected))}")
-    if payload["status"] != "ready_for_review":
-        raise ValueError("researcher result status must be ready_for_review")
-    for key in ("summary", "hypothesis", "next_experiment"):
+    for key in ("hypothesis", "expected_outcome"):
         if not isinstance(payload[key], str):
             raise ValueError(f"researcher result {key} must be a string")
-    changes = payload["changes"]
-    if not isinstance(changes, list):
-        raise ValueError("researcher result changes must be a list")
-    for change in changes:
-        if not isinstance(change, dict) or change.keys() != {"path", "reason"}:
-            raise ValueError("each change must contain exactly path and reason")
-        path = change["path"]
-        reason = change["reason"]
-        if not isinstance(path, str) or not _is_allowed_relative_path(path):
-            raise ValueError(f"researcher result contains disallowed path: {path!r}")
-        if not isinstance(reason, str):
-            raise ValueError("each change reason must be a string")
+    changes = payload["changes_made"]
+    if not isinstance(changes, list) or not all(isinstance(change, str) for change in changes):
+        raise ValueError("researcher result changes_made must be a list of strings")
     return payload
+
+
+def recover_researcher(repo_root: Path, run_id: str, epoch: int) -> Path:
+    """Reuse a completed Codex turn whose saved result failed post-run validation."""
+    repo_root = repo_root.resolve()
+    validate_run_id(run_id)
+    results_dir = repo_root / "results" / "self-improvement" / run_id
+    artifact_dir = _researcher_artifact_dir(results_dir, epoch)
+    metadata_path = artifact_dir / "run.json"
+    metadata = _read_json_object(metadata_path)
+    if metadata.get("status") in {"pending_verification", "needs_recipe_edit"}:
+        return artifact_dir
+    if metadata.get("status") != "failed" or metadata.get("return_code") != 0:
+        raise RuntimeError(f"researcher attempt cannot be safely recovered: {metadata_path}")
+    if not metadata.get("thread_id") or (artifact_dir / "gates").exists():
+        raise RuntimeError(f"researcher recovery has ambiguous side effects: {artifact_dir}")
+
+    preparation = _read_json_object(artifact_dir / "sandbox.json")
+    workspace = artifact_dir / "sandbox"
+    recipe = workspace / "recipe"
+    notes_dir = results_dir / "workspace"
+    working_recipe = repo_root / load_runtime_metadata(repo_root, run_id).working_recipe
+    if snapshot_paths(working_recipe) != preparation.get("recipe_snapshot"):
+        raise RuntimeError("working recipe changed since the researcher sandbox was prepared")
+    with tempfile.TemporaryDirectory(prefix="researcher-recovery-") as temp:
+        staged_recipe = Path(temp) / "recipe"
+        _copy_tree(working_recipe, staged_recipe)
+        stage_agent_configs(staged_recipe)
+        recipe_changes = {
+            f"recipe/{path}" for path in changed_paths(recipe, snapshot_paths(staged_recipe))
+        }
+    notes_before = preparation.get("notes_snapshot")
+    if not isinstance(notes_before, dict):
+        raise ValueError("researcher sandbox has no original notes snapshot")
+    note_changes = {f"workspace/{path}" for path in changed_paths(notes_dir, notes_before)}
+    saved = _read_json_object(artifact_dir / "researcher_result.json")
+    result = _recover_result_shape(saved)
+    metadata.update(
+        {
+            "status": "pending_verification" if recipe_changes else "needs_recipe_edit",
+            "result": result,
+            "changed_paths": sorted(recipe_changes | note_changes),
+            "candidate_snapshot": snapshot_paths(recipe),
+            "notes_snapshot": snapshot_paths(notes_dir),
+            "candidate_promoted": False,
+            "recovered_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    _write_json(metadata_path, metadata)
+    return artifact_dir
+
+
+def _recover_result_shape(payload: dict[str, Any]) -> dict[str, Any]:
+    if set(payload) == {"hypothesis", "changes_made", "expected_outcome"}:
+        return validate_research_result(payload)
+    if set(payload) != {"status", "summary", "hypothesis", "changes", "next_experiment"}:
+        raise ValueError("saved researcher output has an unknown schema")
+    changes = payload["changes"]
+    if payload["status"] != "ready_for_review" or not isinstance(changes, list):
+        raise ValueError("saved researcher output is not a completed candidate")
+    reasons = [
+        change["reason"]
+        for change in changes
+        if isinstance(change, dict)
+        and isinstance(change.get("path"), str)
+        and change["path"].startswith("recipe/")
+        and isinstance(change.get("reason"), str)
+    ]
+    result = {
+        "hypothesis": payload["hypothesis"],
+        "changes_made": reasons or [payload["summary"]],
+        "expected_outcome": payload["next_experiment"],
+    }
+    return validate_research_result(result)
 
 
 def run_researcher(repo_root: Path, run_id: str, epoch: int) -> Path:
@@ -262,12 +324,6 @@ def run_researcher(repo_root: Path, run_id: str, epoch: int) -> Path:
             raise RuntimeError(f"Codex changed read-only paths: {', '.join(disallowed)}")
         notes_modified = {f"workspace/{path}" for path in changed_paths(notes_dir, notes_before)}
         modified = candidate_modified | notes_modified
-        reported = [change["path"] for change in result["changes"]]
-        if len(reported) != len(set(reported)) or set(reported) != modified:
-            raise ValueError(
-                "researcher result changes do not match observed files: "
-                f"reported={sorted(reported)}, observed={sorted(modified)}"
-            )
 
         run_metadata.update(
             {
@@ -317,6 +373,7 @@ def revise_researcher(repo_root: Path, run_id: str, epoch: int, feedback_path: P
     workspace = artifact_dir / "sandbox"
     notes_dir = results_dir / "workspace"
     recipe_before = snapshot_paths(workspace / "recipe")
+    workspace_before = snapshot_paths(workspace)
     notes_before = snapshot_paths(notes_dir)
     if recipe_before != metadata.get("candidate_snapshot"):
         raise ValueError("candidate recipe changed after researcher completed")
@@ -367,22 +424,18 @@ def revise_researcher(repo_root: Path, run_id: str, epoch: int, feedback_path: P
         _write_json(metadata_path, metadata)
         raise RuntimeError(f"Codex revision failed; see {revision_dir / 'stderr.log'}")
     result = validate_research_result(_read_json_object(result_path))
+    disallowed = sorted(
+        path
+        for path in changed_paths(workspace, workspace_before)
+        if not path.startswith("recipe/")
+    )
+    if disallowed:
+        metadata["status"] = "revision_failed"
+        metadata["disallowed_paths"] = disallowed
+        _write_json(metadata_path, metadata)
+        raise RuntimeError(f"Codex changed read-only paths: {', '.join(disallowed)}")
     recipe_after = snapshot_paths(workspace / "recipe")
     notes_after = snapshot_paths(notes_dir)
-    changed = {
-        f"recipe/{path}"
-        for path in recipe_before.keys() | recipe_after.keys()
-        if recipe_before.get(path) != recipe_after.get(path)
-    } | {
-        f"workspace/{path}"
-        for path in notes_before.keys() | notes_after.keys()
-        if notes_before.get(path) != notes_after.get(path)
-    }
-    reported = [change["path"] for change in result["changes"]]
-    if len(reported) != len(set(reported)) or set(reported) != changed:
-        metadata["status"] = "revision_failed"
-        _write_json(metadata_path, metadata)
-        raise ValueError("researcher revision changes do not match observed files")
     working_recipe = repo_root / load_runtime_metadata(repo_root, run_id).working_recipe
     with tempfile.TemporaryDirectory(prefix="researcher-effective-") as temp:
         staged_working = Path(temp) / "recipe"
@@ -521,16 +574,6 @@ def _read_json_object(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _is_allowed_relative_path(path: str) -> bool:
-    candidate = Path(path)
-    return (
-        not candidate.is_absolute()
-        and ".." not in candidate.parts
-        and len(candidate.parts) > 1
-        and candidate.parts[0] in ALLOWED_EDIT_ROOTS
-    )
 
 
 def _dedicated_codex_home() -> Path:

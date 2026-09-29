@@ -54,3 +54,6 @@ You are invoked after a training epoch. Earlier epochs may have tested hypothese
 Edit only `recipe/` and the run-results `workspace/` named in the invocation prompt. Do not modify the baseline recipe, training results, task data, evaluation criteria, runner, instructions, or skills. Do not commit or push. The orchestrator validates your candidate and returns any repair or verifier feedback to you before the next scored experiment.
 
 Finish with a JSON object matching `instructions/researcher-result.schema.json`.
+State the hypothesis, briefly describe each implementation change and why it
+was selected, and predict the expected outcome. Do not list file paths in the
+final result; the orchestrator records changed files independently.

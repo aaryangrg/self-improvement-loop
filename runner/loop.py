@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
+from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .candidate_validation import check_candidate, smoke_candidate
 from .config import RunnerConfig
@@ -11,7 +13,7 @@ from .dashboard import start_dashboard
 from .git_ops import GitOps
 from .introspection import IntrospectionClient
 from .progress import write_run_progress
-from .researcher import ensure_codex_login, revise_researcher, run_researcher
+from .researcher import ensure_codex_login, recover_researcher, revise_researcher, run_researcher
 from .self_improvement import (
     SelfImprovementConfig,
     SelfImprovementRun,
@@ -85,8 +87,9 @@ def review_and_promote(
     config: SelfImprovementConfig,
     git: GitOps,
     intro: IntrospectionClient,
+    researcher_artifact: Path | None = None,
 ) -> str | None:
-    artifact_dir = run_researcher(repo_root, run_id, epoch)
+    artifact_dir = researcher_artifact or run_researcher(repo_root, run_id, epoch)
     metadata_path = artifact_dir / "run.json"
     candidate = artifact_dir / "sandbox" / "recipe"
     code_revisions = 0
@@ -292,6 +295,160 @@ def _execute_loop(
         run.results_dir, epoch=config.loop.max_epochs, phase="complete", status="completed"
     )
     return run.results_dir
+
+
+def resume_loop(
+    repo_root: Path,
+    run_id: str,
+    *,
+    client: IntrospectionClient | None = None,
+    git_ops: GitOps | None = None,
+) -> Path:
+    repo_root = repo_root.resolve()
+    validate_run_id(run_id)
+    results_dir = repo_root / "results" / "self-improvement" / run_id
+    run_metadata = json.loads((results_dir / "metadata" / "run.json").read_text(encoding="utf-8"))
+    config_path = repo_root / run_metadata["config_path"]
+    config = load_self_improvement_config(config_path)
+    serialized_config = json.loads(json.dumps(asdict(config), default=str))
+    if serialized_config != run_metadata["config"]:
+        raise ValueError("self-improvement config changed since this run began")
+    original_split = results_dir / "epochs" / "epoch-000" / "split_config.yaml"
+    pinned_split = results_dir / "metadata" / "split_config.yaml"
+    if not pinned_split.is_file():
+        if not original_split.is_file():
+            raise FileNotFoundError(f"run has no saved split definition: {original_split}")
+        shutil.copyfile(original_split, pinned_split)
+    config = replace(config, split_config=pinned_split)
+
+    git = git_ops or GitOps(repo_root)
+    intro = client or IntrospectionClient(repo_root)
+    git.ensure_clean_worktree()
+    runtime = load_runtime_metadata(repo_root, run_id)
+    expected_branch = runtime.pr_branch or "main"
+    if git.current_branch() != expected_branch:
+        git.switch_branch(expected_branch)
+    ensure_codex_login(repo_root)
+    print(f"Dashboard: {start_dashboard(repo_root, run_id)}", flush=True)
+    try:
+        _resume_epochs(repo_root, config, run_id, git, intro)
+    except BaseException as error:
+        current_path = results_dir / "metadata" / "progress.json"
+        current = json.loads(current_path.read_text(encoding="utf-8"))
+        write_run_progress(
+            results_dir,
+            epoch=int(current["epoch"]),
+            phase=str(current["phase"]),
+            status="interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
+            message=str(error),
+        )
+        raise
+    return results_dir
+
+
+def _resume_epochs(
+    repo_root: Path,
+    config: SelfImprovementConfig,
+    run_id: str,
+    git: GitOps,
+    intro: IntrospectionClient,
+) -> None:
+    results_dir = repo_root / "results" / "self-improvement" / run_id
+    runtime = load_runtime_metadata(repo_root, run_id)
+    if runtime.runtime_id is None:
+        raise ValueError("run has no recorded baseline runtime ID")
+    baseline_config = runner_config_with_runtime_metadata(
+        repo_root, run_id, RunnerConfig(repo_root=repo_root, runtime_id=runtime.runtime_id)
+    )
+    for split in ("train", "test"):
+        write_run_progress(results_dir, epoch=0, phase=split)
+        _resume_split(repo_root, config, run_id, 0, split, baseline_config)
+    refresh_metrics(repo_root, run_id)
+    update_best_candidate(repo_root, run_id)
+
+    runtime = load_runtime_metadata(repo_root, run_id)
+    if runtime.pr_branch is None:
+        branch = f"self-improvement/{run_id}"
+        git.create_branch(branch, base="main")
+        record_pr_branch(repo_root, run_id, branch)
+
+    for epoch in range(1, config.loop.max_epochs + 1):
+        train_dir = results_dir / "epochs" / f"epoch-{epoch:03d}"
+        test_due = epoch % config.loop.test_every == 0 or epoch == config.loop.max_epochs
+        test_dir = results_dir / "test" / f"epoch-{epoch:03d}"
+        if _split_finished(train_dir) and (not test_due or _split_finished(test_dir)):
+            continue
+
+        if (train_dir / "run.json").is_file():
+            run = json.loads((train_dir / "run.json").read_text(encoding="utf-8"))
+            version_id = run["runtime"]["runtime_id"]
+        else:
+            write_run_progress(results_dir, epoch=epoch, phase="research")
+            artifact = results_dir / "metadata" / "researcher" / f"epoch-{epoch:03d}"
+            metadata_path = artifact / "run.json"
+            runtime = load_runtime_metadata(repo_root, run_id)
+            if metadata_path.is_file():
+                researcher = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if researcher.get("status") == "promoted" and runtime.candidate_version_id:
+                    version_id = runtime.candidate_version_id
+                else:
+                    if (artifact / "gates").exists():
+                        raise RuntimeError(
+                            f"candidate gate has unresolved side effects: {artifact}"
+                        )
+                    recovered = recover_researcher(repo_root, run_id, epoch)
+                    version_id = review_and_promote(
+                        repo_root, run_id, epoch, config, git, intro, recovered
+                    )
+            else:
+                version_id = review_and_promote(repo_root, run_id, epoch, config, git, intro)
+        selected_runtime = version_id or load_runtime_metadata(repo_root, run_id).runtime_id
+        runner_config = runner_config_with_runtime_metadata(
+            repo_root, run_id, RunnerConfig(repo_root=repo_root, runtime_id=selected_runtime)
+        )
+        write_run_progress(results_dir, epoch=epoch, phase="train")
+        _resume_split(repo_root, config, run_id, epoch, "train", runner_config)
+        if test_due:
+            write_run_progress(results_dir, epoch=epoch, phase="test")
+            _resume_split(repo_root, config, run_id, epoch, "test", runner_config)
+        refresh_metrics(repo_root, run_id)
+        best = update_best_candidate(repo_root, run_id)
+        if best["is_new_best"] and best["best_epoch"] == epoch and version_id is not None:
+            _record_checkpoint(results_dir, best, load_runtime_metadata(repo_root, run_id))
+    write_run_progress(
+        results_dir, epoch=config.loop.max_epochs, phase="complete", status="completed"
+    )
+
+
+def _split_finished(path: Path) -> bool:
+    progress = path / "progress.json"
+    aggregate = path / "aggregate.json"
+    if not progress.is_file() or not aggregate.is_file():
+        return False
+    payload = json.loads(progress.read_text(encoding="utf-8"))
+    return payload.get("status") in {"completed", "incomplete"}
+
+
+def _resume_split(
+    repo_root: Path,
+    config: SelfImprovementConfig,
+    run_id: str,
+    epoch: int,
+    split: Literal["train", "test"],
+    runner_config: RunnerConfig,
+) -> None:
+    root = repo_root / "results" / "self-improvement" / run_id
+    target = root / ("epochs" if split == "train" else "test") / f"epoch-{epoch:03d}"
+    if _split_finished(target):
+        return
+    if target.exists():
+        archive_root = root / "metadata" / "replays" / split / f"epoch-{epoch:03d}"
+        archive_root.mkdir(parents=True, exist_ok=True)
+        replay = 1
+        while (archive_root / f"attempt-{replay:03d}").exists():
+            replay += 1
+        shutil.move(target, archive_root / f"attempt-{replay:03d}")
+    run_epoch_split(repo_root, config, run_id, epoch, split, runner_config)
 
 
 def _find_id(payload: object, names: tuple[str, ...]) -> str | None:

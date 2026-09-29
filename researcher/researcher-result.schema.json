@@ -2,26 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "summary", "hypothesis", "changes", "next_experiment"],
+  "required": ["hypothesis", "changes_made", "expected_outcome"],
   "properties": {
-    "status": {
-      "type": "string",
-      "enum": ["ready_for_review"]
-    },
-    "summary": {"type": "string"},
     "hypothesis": {"type": "string"},
-    "changes": {
+    "changes_made": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["path", "reason"],
-        "properties": {
-          "path": {"type": "string"},
-          "reason": {"type": "string"}
-        }
-      }
+      "items": {"type": "string"},
+      "description": "Concise descriptions of what changed and why it was selected; no file paths."
     },
-    "next_experiment": {"type": "string"}
+    "expected_outcome": {"type": "string"}
   }
 }

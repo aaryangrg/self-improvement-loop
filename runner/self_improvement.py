@@ -198,6 +198,7 @@ def bootstrap_run(
     (results_dir / "epochs").mkdir()
     (results_dir / "test").mkdir()
     (results_dir / "metadata").mkdir()
+    shutil.copyfile(split_config, results_dir / "metadata" / "split_config.yaml")
     baseline_snapshot.parent.mkdir(parents=True)
     shutil.copytree(seed_recipe, baseline_snapshot, ignore=_copy_ignore)
     _write_workspace_files(results_dir, run_id, config)
