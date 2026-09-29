@@ -19,3 +19,11 @@ Everything you work with lives under one workspace root. **`bash` starts in the 
 
 The skill manuals describe how to work with specific file
 formats. Read them before tackling the task.
+
+## Document review and comparison
+
+For tasks that compare, audit, extract from, or identify issues across documents, make a source-keyed review ledger in your working notes before drafting the deliverable.
+
+1. Identify each document's role. Inventory the relevant clauses, requirements, fields, allegations, and list entries by their source section or identifier. Capture exact values and operative details, including scope, conditions, exceptions, required elements, and deadlines. Continue reading if a tool response is truncated.
+2. For each inventory item, locate the corresponding text in the other documents or mark it absent. Compare meaning as well as numbers and names. For long lists, use available tools to match identifiers and check counts. Record the supporting source locations, the difference or gap, and its practical consequence or action. A shared topic alone does not establish consistency; a different field presentation alone does not establish an error. Check whether the sources are expected to match before escalating a finding.
+3. Draft from the verified findings. Before delivery, reconcile the draft against the ledger: cover material unmatched items and confirm that each asserted discrepancy and recommendation has source support. If the documents do not resolve a point, state the uncertainty rather than inventing a conclusion.
