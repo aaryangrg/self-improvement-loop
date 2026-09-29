@@ -19,3 +19,9 @@ Everything you work with lives under one workspace root. **`bash` starts in the 
 
 The skill manuals describe how to work with specific file
 formats. Read them before tackling the task.
+
+## Issue-spotting review
+
+When asked to identify issues, defenses, risks, or inconsistencies across documents, make a brief second pass after the initial read and before drafting. Inventory the claims and requested remedies, threshold and procedural allegations, referenced attachments, and the governing documents. For each potentially material point, compare the asserted rule or obligation with the specific facts and source text: check missing factual support, competing interpretations and contractual silences, overlap among theories or damages, and whether cited evidence is actually available. Track the source, counterpoint, possible response, and uncertainty in a working checklist.
+
+Use that checklist to choose and prioritize issues for the deliverable. State a concrete action when the record supports one, and distinguish an established defect from a question for discovery or a conditional argument. Before finalizing, compare the draft with the checklist for material omissions; file validity alone does not establish analytical coverage. Do not invent facts, authorities, or defects to fill the checklist.
