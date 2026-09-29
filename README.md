@@ -1,126 +1,133 @@
-# Self Improvement Loop
+# Self-Improvement Loop
 
-Initial bridge for running Harvey LAB tasks against an Introspection legal-agent recipe.
+This project runs an ML-training-adjacent loop for an Introspection legal agent.
+It starts from a baseline recipe, measures it on a train and held-out test split,
+then repeats a bounded cycle: a Codex researcher studies training failures and
+edits the recipe, a fresh Codex verifier checks that the edit is general rather
+than tailored to a sample, and the runner evaluates the new recipe. Train scores
+guide the researcher; test scores are visible to us for transfer monitoring but
+are not supplied to the researcher.
 
-## Setup
+Runs are config-driven. A self-improvement config selects the seed recipe,
+task split, judge, researcher and verifier models, epoch count, and test cadence.
+The split config selects Harvey LAB task IDs, trial counts, and concurrency.
+Each run keeps its own recipe, Introspection runtime, results, research notes,
+and score history. The local dashboard shows live task progress and train/test
+score curves as the run evolves.
+
+The changing object is the agent recipe: its instructions, skills, tools, and
+dependencies.
+See [Architecture](docs/architecture.md) for the flow and isolation model.
+
+## Install
+
+Prerequisites: Git and GitHub CLI (`gh`), `uv`, Node.js 24, and npm. Python 3.13
+is selected by `.python-version`; Node 24 is selected by `.nvmrc`. The Harvey LAB
+dataset is a pinned Git submodule.
 
 ```bash
-uv sync
 git submodule update --init --recursive
-nvm use
-npm ci
-```
-
-## External Prerequisites
-
-Python dependencies are managed by `uv` and pinned to Python 3.13 via `.python-version`.
-Node is pinned to 24 via `.nvmrc` because the Introspection CLI requires Node 24+.
-The root npm lockfile also installs the exact Codex CLI version used by the
-self-improvement researcher.
-
-The Introspection CLI is an external Node/npm tool, not a Python package:
-
-```bash
+uv sync
 nvm install 24
 nvm use
+npm ci
 npm install --global @introspection-ai/cli
-introspection setup
-introspection login
 ```
 
-The Harvey LAB dataset is expected at `harvey-labs/` as a pinned Git submodule. After cloning this repository, initialize it with:
+`uv` installs the runner and development tools from `pyproject.toml`/`uv.lock`.
+`npm ci` installs the pinned Codex CLI used by the researcher and verifier.
+The Introspection CLI is installed separately. Agent-side dependencies are
+declared inside `recipes/legal-agent/`; they are provisioned for the agent's
+Introspection sandbox, not by the root `uv sync`.
+
+## Authenticate
+
+1. Run `introspection setup` and `introspection login` for the cloud task/runtime
+   account. Check it with `introspection doctor -o report`.
+2. Authenticate GitHub CLI with `gh auth login`. The loop pushes a bootstrap
+   commit, creates a run branch, and opens a draft PR for candidate versions.
+3. Set `OPENAI_API_KEY` in your shell for the Harvey judge configured in the
+   supplied configs. Do not commit keys or put them in recipe files.
+4. Sign the dedicated Codex profile into your ChatGPT account. `self-improve
+   start` prompts for this when needed in an interactive terminal; you can also
+   do it ahead of time:
+
+   ```bash
+   CODEX_HOME="$HOME/.self-improvement-loop/codex" ./node_modules/.bin/codex login
+   ```
+
+The Codex researcher/verifier do not use `OPENAI_API_KEY`; the runner removes
+it from their subprocess environment. The Harvey evaluator does use the key.
+The legal task agent uses Introspection's managed LLM runtime. Confirm provider
+access and expected costs before starting a full split.
+
+## Run The Loop
+
+Start from a clean `main` worktree with a configured Git remote:
 
 ```bash
-git submodule update --init --recursive
+uv run python -m runner self-improve start --config self-improvement-configs/smoke.yaml
 ```
 
-Quick environment checks:
+The runner generates a run ID unless you pass `--run-id`. It prints a localhost
+dashboard URL, then creates the run recipe/runtime, scores baseline epoch 0 on
+both splits, and runs the configured research epochs. The supplied smoke config
+uses one train task and one test task, one trial each, and two research epochs.
+`self-improvement-configs/` holds loop settings; `experiment_configs/` holds
+reusable train/test task selections. A larger split is available in
+`experiment_configs/baseline_split.yaml`.
+
+Results are written to `results/self-improvement/<run-id>/`. The dashboard reads
+those local files and refreshes during execution; it does not control or upload
+the run.
+
+## Monitor a Run
+
+Open the localhost URL printed by `self-improve start`. The dashboard shows
+the research process as it unfolds:
+
+- **Performance** plots train and held-out test task/rubric pass rates by epoch.
+- **Epoch activity** shows tasks moving through execution and evaluation,
+  including scored and failed trials.
+- **Cost and usage** reports agent generation cost, judge estimates, and Codex
+  token usage.
+- **Research history** shows each proposed hypothesis and recipe change,
+  expected outcome, verifier decision, and a link to the candidate commit.
+
+The run selector in the sidebar lets you inspect earlier local runs. The page
+refreshes during execution, so you can watch both scoring and research progress
+without waiting for the terminal command to finish.
+
+![Completed smoke run showing score curves and epoch activity](docs/images/smoke-performance.png)
+
+Scroll to **Research history** to inspect each epoch's hypothesis, changes,
+expected outcome, and verifier decision. The latest epoch is expanded by
+default; approved candidates link to their exact GitHub commit.
+
+![Research history for a completed smoke run](docs/images/smoke-research-log.png)
+
+Open an earlier run's dashboard directly with:
 
 ```bash
-uv run python --version
-node --version
-command -v introspection
-introspection doctor -o report
-test -d harvey-labs/tasks
+uv run python -m runner self-improve ui --run-id <run-id>
 ```
 
-## Smoke Check
+Stop a run with Ctrl-C. To continue an interrupted run:
 
 ```bash
-uv run python scripts/smoke_check.py --task-id compare-matter-plan-against-engagement-letter
+uv run python -m runner self-improve resume --run-id <run-id>
 ```
 
-## Baseline Agent Recipe
+Resume skips finished splits and archives partial split results before replay.
+It can reuse a completed researcher edit. It stops for inspection if a candidate
+gate might already have committed, pushed, or deployed a version. `start` and
+`resume` may leave the worktree on the run branch; switch back to `main` before
+starting another run. Changing branches does not remove the ignored local
+`results/` directory.
 
-The initial Introspection agent recipe lives at `recipes/legal-agent/`. It is a
-first Harvey LAB-compatible baseline, not yet an optimized agent.
+## Smaller Commands
 
-Current recipe surface:
-
-- Agent tools: `read_file`, `ls`, `grep`, `find`, `bash`, `write`, and `edit`.
-- Custom `read_file` extension for text, `.docx`, `.xlsx`, `.pptx`, and `.pdf`.
-- Harvey-style `docx`, `xlsx`, and `pptx` skills adapted to Introspection
-  workspace paths.
-- Stable sandbox conventions:
-  - input task files are read from `/workspace/files`
-  - final deliverables are written under `/workspace/outputs`
-  - skill helper scripts are available under `/workspace/.pi/skills/<name>/scripts`
-- Recipe-local Python runtime declared through
-  `recipes/legal-agent/python/pyproject.toml`, `uv.lock`, and
-  `package.json#pi.runtime.python`.
-- Recipe-local Node runtime dependencies declared in
-  `recipes/legal-agent/package.json` and `pnpm-lock.yaml`.
-
-Supported first-cut document capabilities:
-
-- DOCX generation/editing with `python-docx`, `docxtpl`, Markdown-to-DOCX, and
-  OOXML helper scripts.
-- XLSX generation/editing with `openpyxl`, including formula authoring and
-  marking workbooks for recalculation on open.
-- PPTX generation/editing with `python-pptx`, `md2ppt`, and `pptxgenjs`.
-- PDF/text extraction through the custom `read_file` path where supported by the
-  installed Python libraries.
-
-Intentional first-cut gaps:
-
-- No Marp CLI.
-- No LibreOffice-backed Office conversion, rendering, or XLSX recalculation.
-- No Pandoc-backed conversions.
-- No OCR stack for scanned PDFs/images.
-- No claim of high-fidelity arbitrary HTML/CSS-to-PPTX conversion.
-
-Validated locally so far:
-
-- `introspection check -o report`
-- Markdown-to-PPTX smoke test through `md2ppt`
-- JSON-to-PPTX smoke test through `pptxgenjs` under Node 24
-- Python compile checks for the new PPTX helper
-
-Still to prove with a real managed run:
-
-- Uploading Harvey task files into Introspection.
-- Invoking the cloud sandbox recipe.
-- Collecting generated artifacts and conversation trace.
-- Running Harvey evaluation against the downloaded outputs.
-
-See `docs/recipe-runtime-dependencies.md` for the detailed comparison between
-Harvey's sandbox and this baseline recipe.
-
-See `docs/self-improvement-run-model.md` for the self-improvement recipe
-copying, runtime, and epoch-tracking model.
-
-See `docs/self-improvement-loop-implementation.md` for the planned
-script-orchestrated improvement loop and researcher-agent boundaries.
-
-## Run One Task
-
-Cloud development runs need a concrete runtime version id:
-
-```bash
-introspection runtimes create --manifest .introspection/legal-agent.yaml -o json
-```
-
-Use the returned `id`:
+Run one Harvey task against an existing Introspection runtime version:
 
 ```bash
 uv run python -m runner run-one \
@@ -129,13 +136,7 @@ uv run python -m runner run-one \
   --runtime-id <runtime-id>
 ```
 
-Outputs are written under `results/tasks/<task-id-safe>/trial-001/` by default.
-The trial directory contains the conversation trace, downloaded output files,
-and Harvey evaluation files when evaluation is enabled.
-
-## Run A Split
-
-Reusable train/test task selections live under `experiment_configs/`.
+Run a split without the self-improvement loop:
 
 ```bash
 uv run python -m runner run-experiment \
@@ -144,307 +145,34 @@ uv run python -m runner run-experiment \
   --runtime-id <runtime-id>
 ```
 
-Experiment outputs are written under:
+These commands save task conversations, downloaded deliverables, Harvey scores,
+and aggregate results under `results/tasks/` or `results/experiment_runs/`.
+`uv run python -m runner --help` lists the other manual lifecycle commands.
 
-```text
-results/experiment_runs/<experiment-run-id>/
-  run.json
-  split_config.yaml
-  <split>/
-    aggregate.json
-    <task-id-safe>/
-      task_summary.json
-      trial-001/
-        conversation.json
-        outputs/
-        evaluation/
-        evaluation.json
-        incidents.json
-        trial_summary.json
-```
+## Project Map
 
-Split configs use separate task and evaluation concurrency:
+- `recipes/legal-agent/`: reusable baseline agent recipe and agent-side deps.
+- `harvey-labs/`: pinned task dataset and evaluator submodule.
+- `experiment_configs/`: train/test task IDs and concurrency.
+- `self-improvement-configs/`: loop, judge, researcher, and verifier settings.
+- `runner/`: task execution, evaluation, orchestration, and local dashboard data.
+- `researcher/` and `verifier/`: Codex instructions, skills, and output schemas.
+- `results/`: local, ignored run artifacts and score history.
 
-```yaml
-defaults:
-  trials_per_task: 1
-  task_concurrency: 3
-  eval_concurrency: 5
-```
+The baseline recipe adapts Harvey's document skills and prompt to Introspection
+paths. Its custom `read_file` tool extracts text from common Office/PDF formats;
+declared Python/Node packages support DOCX, XLSX, and PPTX authoring. Workflows
+that require absent system binaries are excluded. See
+[Architecture](docs/architecture.md#baseline-agent-construction) and
+[Recipe Runtime Dependencies](docs/recipe-runtime-dependencies.md).
 
-`task_concurrency` controls concurrent Introspection task execution and artifact
-download. `eval_concurrency` controls how many completed trials are sent through
-Harvey evaluation at once. The CLI `--eval-parallel` flag is still passed through
-to Harvey's evaluator for within-evaluation judge parallelism. Evaluation starts
-as soon as each trial finishes; it does not wait for every agent task in the split.
-
-Generic `run-experiment` accepts `--eval-judges gpt-6-sol`. Self-improvement
-runs instead take judges from the `evaluation` section of their config, currently
-GPT-6 Sol in both supplied configs. The runner pins those settings under
-`metadata/evaluation.json` and rejects changes within the same run. A small
-compatibility wrapper supplies this model's Responses API parameters.
-
-Trial summaries use `scored` as the gate for aggregate calculations. Failed or
-unscored trials still keep any conversation, task metadata, partial outputs, and
-error files the runner could recover, but they do not enter task or split pass
-rate calculations. Aggregates report both `number_of_scored_trials` and
-`number_of_failed_trials`, plus task coverage fields:
-`number_of_evaluated_tasks` and `number_of_unevaluated_tasks`.
-If fewer than half of the tasks have a score after the first pass, each
-unevaluated task gets one additional execution attempt. Failed attempts and
-their traces remain in separate trial directories. The split continues even
-if task coverage is still partial; `progress.json` marks it `incomplete`, and
-the aggregate scores reflect only scored trials. A failed root agent span in
-the Introspection trace marks that attempt as failed, even when the platform
-reports its run as completed.
-
-## Start A Self-Improvement Run
-
-Reusable self-improvement settings live under `self-improvement-configs/`.
-The supplied configs pin the Harvey judge to `gpt-6-sol` at medium reasoning,
-the Codex researcher to `gpt-6-sol` at xhigh, and the fresh Codex verifier to
-`gpt-6-sol` at medium. The legal task agent remains on Claude Sonnet 4.6.
-Reasoning effort is required in each of the `evaluation`, `researcher`, and
-`verifier` config sections and is recorded with run metadata.
-
-Create the local run skeleton first:
+## Development
 
 ```bash
-uv run python -m runner self-improve bootstrap \
-  --config self-improvement-configs/smoke.yaml \
-  --run-id run-001
-```
-
-This creates:
-
-```text
-recipes/self-improvement/<run-id>/legal-agent/
-.introspection/self-improvement-<run-id>.yaml
-results/self-improvement/<run-id>/
-results/self-improvement/<run-id>/metadata/runtime.json
-```
-
-Commit and push the bootstrap recipe/manifest to `main`, then create the
-Introspection runtime and record it:
-
-```bash
-uv run python -m runner self-improve commit-bootstrap --run-id run-001
-```
-
-```bash
-uv run python -m runner self-improve create-runtime --run-id run-001
-```
-
-If the runtime was created manually, record it instead:
-
-```bash
-uv run python -m runner self-improve record-runtime \
-  --run-id run-001 \
-  --runtime-id <runtime-id>
-```
-
-For the epoch loop, create a branch and draft PR. The branch command checks that
-the worktree is clean, switches to `main`, creates the PR branch, and records
-that branch in `metadata/runtime.json`. The PR command switches to the recorded
-branch, pushes it, opens the PR, and records `pr/N`.
-
-```bash
-uv run python -m runner self-improve create-pr-branch --run-id run-001
-
-uv run python -m runner self-improve open-pr --run-id run-001
-```
-
-If a PR already exists, record it manually instead:
-
-```bash
-uv run python -m runner self-improve record-pr \
-  --run-id run-001 \
-  --pr-number <number> \
-  --branch self-improvement/run-001
-
-uv run python -m runner self-improve pin-staging-pr --run-id run-001
-```
-
-Candidate epoch commits need to be pushed to the PR branch so Introspection can
-build them. Best-checkpoint or final promotion can still be delayed until the
-overall run is done.
-
-After each verified recipe edit, commit and push the candidate:
-
-```bash
-uv run python -m runner self-improve commit-candidate \
-  --run-id run-001 \
-  --epoch 1
-```
-
-Run epoch 0 after the runtime is available. Baseline is just epoch `0` using
-the same train/test commands as every later epoch:
-
-```bash
-uv run python -m runner self-improve run-train \
-  --config self-improvement-configs/smoke.yaml \
-  --run-id run-001 \
-  --epoch 0
-
-uv run python -m runner self-improve run-test \
-  --config self-improvement-configs/smoke.yaml \
-  --run-id run-001 \
-  --epoch 0
-
-uv run python -m runner self-improve refresh-metrics --run-id run-001
-uv run python -m runner self-improve update-best-candidate --run-id run-001
-```
-
-Epoch 0 should run both splits because it establishes the baseline. Later train
-epochs can use the same `run-train --epoch N` command after each verified recipe
-change.
-
-If `--run-id` is omitted, the runner generates an id like
-`run-20260927-090512-345678`. You can still provide `--run-id` to choose a
-specific id.
-
-The run uses convention-based paths:
-
-```text
-recipes/self-improvement/<run-id>/legal-agent/
-.introspection/self-improvement-<run-id>.yaml
-results/self-improvement/<run-id>/
-```
-
-For now, self-improvement iteration is expected to use Git-backed Introspection
-candidate versions rather than `introspection dev`. We observed that
-`introspection dev` exits without attaching in this project and development
-tasks fail even when the same runtime works in staging. See
-`docs/self-improvement-run-model.md` for the recorded finding and the PR-backed
-runtime model.
-
-Once `metadata/runtime.json` contains a runtime id, later train/test commands do
-not need `--runtime-id`; they read it from metadata.
-
-Self-improvement epoch runs write graph-ready metrics to:
-
-```text
-results/self-improvement/run-001/metadata/metrics.jsonl
-results/self-improvement/run-001/metadata/metrics.csv
-```
-
-Regenerate metrics after train/test epochs with:
-
-```bash
-uv run python -m runner self-improve refresh-metrics --run-id run-001
-```
-
-Best-candidate state is updated explicitly:
-
-```bash
-uv run python -m runner self-improve update-best-candidate --run-id run-001
-```
-
-That writes `results/self-improvement/run-001/metadata/best_candidate.json`.
-
-## Codex Researcher
-
-Start an end-to-end self-improvement run from a clean `main` worktree:
-
-```bash
-uv run python -m runner self-improve start --config self-improvement-configs/smoke.yaml
-```
-
-`--run-id` is optional. The command bootstraps and pushes the run's recipe,
-creates its runtime, evaluates epoch 0 on train and test, and then runs the
-configured research epochs. Each candidate passes a fresh read-only verifier;
-rejections return to the same researcher session up to the configured revision
-limit. Approved edits are promoted, committed on the run's PR branch, matched
-to a ready Introspection version by Git SHA, and evaluated. Test runs occur at
-the configured cadence and on the final epoch. Results live under
-`results/self-improvement/<run-id>/`. A failure stops the loop with its files
-available for inspection. To continue a stopped run, use:
-
-```bash
-uv run python -m runner self-improve resume --run-id <run-id>
-```
-
-Resume skips completed splits, replays unfinished splits while archiving their
-partial results under `metadata/replays/`, and reuses a completed researcher
-edit when verification has not started. It stops for manual inspection if a
-candidate gate may already have committed or deployed changes.
-
-`self-improve start` also launches a read-only Streamlit dashboard bound to
-`127.0.0.1` and prints its URL before the baseline begins. It reads local
-`results/self-improvement/` files and refreshes every three seconds; it does not
-upload results or control the run. To inspect previous runs without starting an
-experiment:
-
-```bash
-uv run python -m runner self-improve ui --run-id run-001
-```
-
-The dashboard shows task and rubric pass rates, live trial states, researcher
-and verifier decisions, Introspection-reported generation cost, and Codex token
-usage. New GPT-6 Sol evaluations record each judge response's token usage in
-`evaluation/judge_usage.json`; the dashboard estimates judge cost using published
-standard API rates. Older runs have no judge-usage history, and ChatGPT-signed-in
-Codex usage is shown as tokens rather than a dollar charge. Stop the runner with
-Ctrl-C; the local dashboard remains available for inspection.
-
-The researcher can also be invoked separately after a train epoch completes. It reads
-the original train epoch results, including Harvey `scores.json` feedback, and
-the original baseline recipe. It writes research notes directly under the run's
-`workspace/`. Only the candidate recipe is copied into
-`results/self-improvement/<run-id>/metadata/researcher/epoch-XXX/sandbox/recipe/`.
-Held-out test results and the Harvey source task criteria are not accessible.
-A JSON Schema validates the final report, while `events.jsonl` preserves
-Codex's event stream. Manual `verify` and `promote` commands are available for
-inspecting one candidate outside the full loop.
-
-Prepare the workspace, then invoke the researcher:
-
-```bash
-uv run python -m runner self-improve prepare-researcher --run-id run-001 --epoch 1
-uv run python -m runner self-improve research --run-id run-001 --epoch 1
-uv run python -m runner self-improve verify --run-id run-001 --epoch 1
-uv run python -m runner self-improve promote --run-id run-001 --epoch 1
-```
-
-The researcher and verifier models are required in the self-improvement config
-and pinned in the run metadata at bootstrap. Neither role falls back to your
-personal Codex model setting.
-
-The researcher and verifier use `~/.self-improvement-loop/codex` as a dedicated
-`CODEX_HOME`, separate from your personal Codex profile and from the run's
-isolated `HOME`. `self-improve start` checks this profile before bootstrap and
-opens Codex sign-in if needed when run in a terminal. For non-interactive runs,
-authenticate this profile first with your ChatGPT account:
-
-```bash
-CODEX_HOME="$HOME/.self-improvement-loop/codex" ./node_modules/.bin/codex login
-```
-
-The subprocess does not require or pass `OPENAI_API_KEY`, and does not copy
-credentials into `results/`. Keep this dedicated profile free of personal
-`AGENTS.md` files and skills. The researcher-only `AGENTS.md` and skills are
-copied into its prepared workspace; they are not installed at the repository
-root. The verifier has its own instructions in `verifier/AGENTS.md`.
-
-The pinned CLI's actual `codex exec` path was smoke-tested with this profile:
-allowed reads and writes succeeded, while a read outside the permitted paths and a
-write to a read-only folder were denied. The earlier `codex sandbox` debug
-command's `TIOCSTI` failure does not affect that result. `events.jsonl` is an
-audit/debug record of researcher tool calls and failures; scoring does not
-require it.
-Each epoch can be invoked only once without explicitly inspecting and resetting
-its prepared workspace. See `docs/self-improvement-loop-implementation.md`.
-
-## Development Verification
-
-```bash
-uv run python -m compileall runner scripts
-uv run python -m runner --help
+uv run python -m unittest discover -s tests
 uv run pre-commit run --all-files
 ```
 
-After `harvey-labs/` is initialized:
-
-```bash
-uv run python scripts/smoke_check.py --task-id compare-matter-plan-against-engagement-letter
-```
+The pinned submodule and external CLIs must be present for integration runs.
+An example self-improvement PR, with its hypotheses and measured results, will
+be linked here once that run has been reviewed.
