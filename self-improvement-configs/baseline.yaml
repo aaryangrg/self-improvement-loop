@@ -10,8 +10,8 @@ evaluation:
   parallel: 1
 
 loop:
-  max_epochs: 10
-  test_every: 3
+  max_epochs: 5
+  test_every: 2
   max_code_revisions: 5
 
 researcher:
