@@ -80,6 +80,24 @@ def wait_for_ready_version(
         time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
 
 
+def draft_pr_details(config: SelfImprovementConfig, run_id: str) -> tuple[str, str]:
+    title = f"Agent recipe experiment: {config.id} ({run_id})"
+    body = (
+        "## Experiment\n\n"
+        f"Automated recipe improvement from `{config.seed_recipe}` using "
+        f"`{config.split_config}`. Run ID: `{run_id}`.\n\n"
+        f"The loop allows {config.loop.max_epochs} research epochs and evaluates the "
+        f"held-out split every {config.loop.test_every} epoch(s), plus baseline. "
+        "The researcher sees training evidence only.\n\n"
+        "## Review notes\n\n"
+        "This draft PR pins staging runtime builds to the candidate branch. "
+        "Candidate commits are validated and reviewed before scoring; results "
+        "are recorded locally. Add the final train/test scores and a concise "
+        "change summary before treating this as a performance improvement.\n"
+    )
+    return title, body
+
+
 def review_and_promote(
     repo_root: Path,
     run_id: str,
@@ -150,11 +168,12 @@ def review_and_promote(
             runtime_id = runtime.runtime_id
             git.push_branch(runtime.pr_branch)
             if runtime.pr_ref is None:
+                title, body = draft_pr_details(config, run_id)
                 pr = git.open_draft_pr(
                     runtime.pr_branch,
                     "main",
-                    f"Self-improvement run {run_id}",
-                    f"Recipe candidates and train results for {run_id}.",
+                    title,
+                    body,
                 )
                 runtime = record_pr(repo_root, run_id, pr.number, runtime.pr_branch, pr.url)
             if runtime.pr_ref is None:
@@ -262,7 +281,8 @@ def _execute_loop(
     intro: IntrospectionClient,
 ) -> Path:
     bootstrap_commit = git.commit_paths(
-        candidate_commit_paths(repo_root, run_id), f"Bootstrap self-improvement run {run_id}"
+        candidate_commit_paths(repo_root, run_id),
+        f"Initialize {config.id} recipe experiment ({run_id})",
     )
     git.push_branch("main")
     record_bootstrap_commit(repo_root, run_id, bootstrap_commit)

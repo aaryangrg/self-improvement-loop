@@ -11,6 +11,7 @@ from runner.config import RunnerConfig
 from runner.git_ops import PullRequestInfo
 from runner.loop import (
     _resume_split,
+    draft_pr_details,
     resume_loop,
     review_and_promote,
     start_loop,
@@ -54,6 +55,25 @@ class FakeClient:
 
 
 class LoopTest(unittest.TestCase):
+    def test_draft_pr_describes_run_without_claiming_results(self) -> None:
+        config = SelfImprovementConfig(
+            id="smoke",
+            description="",
+            seed_recipe=Path("recipes/legal-agent"),
+            split_config=Path("experiment_configs/smoke_split.yaml"),
+            loop=LoopConfig(max_epochs=2, test_every=1),
+            evaluation=EvaluationConfig(judges=("gpt-6-sol",)),
+            researcher=ResearcherConfig(model="gpt-6-sol"),
+            verifier=VerifierConfig(model="gpt-6-sol"),
+        )
+
+        title, body = draft_pr_details(config, "run-001")
+
+        self.assertEqual(title, "Agent recipe experiment: smoke (run-001)")
+        self.assertIn("`experiment_configs/smoke_split.yaml`", body)
+        self.assertIn("research epochs", body)
+        self.assertIn("training evidence only", body)
+
     def test_resume_archives_incomplete_split_before_replaying(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -292,6 +312,7 @@ class LoopTest(unittest.TestCase):
             class FakeGit:
                 def __init__(self) -> None:
                     self.commits = 0
+                    self.messages: list[str] = []
 
                 def current_branch(self) -> str:
                     return "main"
@@ -301,6 +322,7 @@ class LoopTest(unittest.TestCase):
 
                 def commit_paths(self, paths: tuple[str, ...], message: str) -> str:
                     self.commits += 1
+                    self.messages.append(message)
                     return f"commit-{self.commits}"
 
                 def push_branch(self, branch: str) -> None:
@@ -323,6 +345,7 @@ class LoopTest(unittest.TestCase):
                 def pin_runtime_version(self, runtime_id: str) -> dict[str, str]:
                     return {"id": runtime_id}
 
+            git = FakeGit()
             with (
                 patch("runner.loop.ensure_codex_login") as login,
                 patch("runner.loop.start_dashboard", return_value="http://127.0.0.1:8501/") as ui,
@@ -337,11 +360,12 @@ class LoopTest(unittest.TestCase):
                     },
                 ),
             ):
-                result = start_loop(root, config, "run-001", client=FakeIntro(), git_ops=FakeGit())
+                result = start_loop(root, config, "run-001", client=FakeIntro(), git_ops=git)
 
             login.assert_called_once_with(root.resolve())
             ui.assert_called_once_with(root.resolve(), "run-001")
             self.assertEqual(result, root.resolve() / "results" / "self-improvement" / "run-001")
+            self.assertEqual(git.messages, ["Initialize smoke recipe experiment (run-001)"])
             calls = [
                 (call.args[3], call.args[4], call.args[5].runtime_id)
                 for call in run_split.call_args_list
