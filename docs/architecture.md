@@ -110,7 +110,8 @@ dashboard, but test details are never supplied to the researcher.
 - Create a run branch. On the first proposed edit, push the candidate and open
   a draft PR. For each later candidate, wait for the runtime version built
   from its exact PR commit; after validation and review, pin that version for
-  the next epoch.
+  the next epoch. The runner refreshes the draft PR after each scored epoch
+  with train/test scores and the candidate's research and verifier summary.
 
 This gives each run independent recipe history: one can start from the baseline,
 while another can seed from a chosen recipe checkpoint from a prior run. The
@@ -383,48 +384,38 @@ Harvey-versus-recipe package and system-tool comparison.
 
 ## Future Scope
 
-The two-epoch smoke run proves the end-to-end loop, not that the current
-research strategy will scale or generalize. The next experiments should focus
-on the quality and cost of research feedback:
+The loop works on a smoke split, but larger experiments will change what the
+researcher needs and what we can afford to run:
 
-- **Summarize failures before handing them to Codex.** Larger splits produce
-  more evaluation calls, traces, and files than a researcher can usefully read
-  each epoch. Keep every scored trial for audit, but build a deterministic
-  index of failures by task, artifact type, execution phase, tool error, and
-  rubric outcome. Let the researcher open representative traces and
-  counterexamples from each group. This reduces repeated reading without
-  discarding the underlying evidence.
-- **Reduce the default evidence surface.** Give the researcher a compact
-  per-epoch index and the files relevant to its current hypothesis, rather
-  than presenting every conversation and deliverable as equally important.
-  It should still be able to drill into train evidence when a summary is
-  insufficient. This is an attention and context-window improvement, not a
-  reason to delete raw results.
-- **Grow and structure the dataset.** A one-task smoke split cannot establish
-  generalization. Add more train and held-out tasks with overlapping *failure
-  modes* but distinct documents and answers, so an improvement has a fair
-  chance to transfer without being rewarded for memorizing a sample. Track
-  coverage and variance across multiple trials as the split grows.
-- **Experiment with validation feedback.** Detailed held-out test results
-  should stay outside the researcher's reach; repeatedly feeding them back
-  would turn that test into training feedback. If the researcher needs an
-  intermediate signal, add a separate validation split it may inspect, and
-  reserve a final test split for private transfer measurement. Even aggregate
-  test scores revealed every epoch can steer the search, so that choice should
-  be made explicitly.
-- **Optimize quality alongside cost and time.** Feed task-agent generation
-  cost and execution time back to the researcher, including slow-tail or
-  worst-case runs, so it can seek higher pass rates without unbounded expense
-  or latency. Keep judge and Codex research costs separate from task-agent
-  costs when comparing candidate recipes.
-- **Allow targeted train probes.** Give the researcher a bounded tool to run a
-  chosen train task or small train subset before paying for another full epoch.
-  Log every probe and its cost to avoid quietly overfitting through repeated
-  sample selection. Cloud probes of a *changed* recipe still need a Git-backed
-  runtime version today; truly uncommitted quick tests would require a working
-  development lane or a local execution path with comparable behavior.
+- **Larger splits will be expensive and noisy.** We should still evaluate every
+  trial, but group failures by deterministic signals before presenting them to
+  the researcher. It can inspect representative failures and then open the
+  underlying traces when a group needs closer investigation.
+- **The researcher sees too many files today.** Give it a concise index and
+  the evidence relevant to the current hypothesis, rather than every
+  conversation, artifact, and score file by default. Keep the full results
+  available for drill-down and audit.
+- **Decide what evaluation feedback it may see.** We could give the researcher
+  results from an evaluation split to help it choose the next experiment. Once
+  those results influence its edits, that split is effectively validation data,
+  not an untouched test set. We would need a separate final held-out set to
+  measure transfer honestly.
+- **Expand both train and evaluation coverage.** The splits need more tasks,
+  with some shared structural failure modes but different documents and
+  answers. Otherwise an edit may fix a train sample without having any
+  plausible path to improving evaluation performance.
+- **Include cost and execution time in the objective.** Feed task-agent cost
+  and latency, including slow runs, back to the researcher. It could then seek
+  improvements that are cheaper or faster, or quality gains that do not come
+  at a disproportionate cost. Track judge and research costs separately.
+- **Let the researcher run small probes.** Today it commits to a recipe change
+  before seeing another result. A bounded tool for running selected train tasks
+  would let it test a hypothesis before a full epoch. Log probe choices and
+  costs so repeated probing does not become hidden sample-level tuning. For
+  cloud runs, changed recipes still need a Git-backed runtime until a working
+  development lane is available.
 
-The longer-term direction is an independent researcher agent that coordinates
-hypotheses, targeted probes, and full epochs within explicit time and spending
-budgets. The orchestrator would still enforce recipe permissions, validation,
-held-out separation, and human control over final promotion.
+Longer term, the researcher could coordinate its own hypotheses, targeted
+probes, and full epochs within explicit cost and time budgets. The orchestrator
+would continue to enforce permissions, validation, and the final held-out
+boundary.

@@ -96,9 +96,16 @@ the research process as it unfolds:
 
 The run selector in the sidebar lets you inspect earlier local runs. The page
 refreshes during execution, so you can watch both scoring and research progress
-without waiting for the terminal command to finish.
+without waiting for the terminal command to finish. The draft GitHub PR also
+receives an updated score table and candidate history after each scored epoch;
+the local dashboard retains the detailed task evidence and costs.
 
 ![Completed smoke run showing score curves and epoch activity](docs/images/smoke-performance.png)
+
+Below **Epoch activity**, **Cost and usage** separates Introspection generation
+cost, estimated judge cost, and Codex token usage, with a per-epoch cost table.
+
+![Cost and usage for a completed smoke run](docs/images/smoke-cost-usage.png)
 
 Scroll to **Research history** to inspect each epoch's hypothesis, changes,
 expected outcome, and verifier decision. The latest epoch is expanded by
