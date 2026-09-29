@@ -1,0 +1,5 @@
+name: self-improvement-run-20260929-021912-248647
+path: recipes/self-improvement/run-20260929-021912-248647/legal-agent
+description: Self-improvement working recipe for run-20260929-021912-248647.
+runtime:
+  llm_mode: managed
