@@ -178,6 +178,15 @@ def review_and_promote(
                     if feedback_path is None:
                         intro.pin_runtime_version(version_id)
                         record_candidate(repo_root, run_id, commit, version_id)
+                        (artifact_dir / "candidate.json").write_text(
+                            json.dumps(
+                                {"epoch": epoch, "commit": commit, "version_id": version_id},
+                                indent=2,
+                                sort_keys=True,
+                            )
+                            + "\n",
+                            encoding="utf-8",
+                        )
                         return version_id
         if feedback_path is None:
             raise AssertionError("candidate gate did not return feedback")

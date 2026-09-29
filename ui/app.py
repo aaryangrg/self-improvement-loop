@@ -17,7 +17,7 @@ from runner.dashboard_data import list_runs, load_run  # noqa: E402
 TRAIN = "#137d79"
 TEST = "#de684f"
 
-st.set_page_config(page_title="Self-improvement monitor", page_icon="◎", layout="wide")
+st.set_page_config(page_title="Agent improvement", page_icon="◎", layout="wide")
 st.markdown(
     """
 <style>
@@ -38,10 +38,35 @@ st.markdown(
   .score-label { color: #5e706a; font-size: .78rem; font-weight: 600; }
   .score-value { color: #1c302b; font-size: 1.55rem; font-weight: 700; line-height: 1.25; }
   .score-cell.test .score-value { color: #c45641; }
-  .timeline-entry { border-left: 2px solid #b9d7d0; padding: .3rem .9rem; margin-bottom: .9rem; }
+  [data-testid="stExpander"] { border: 1px solid #d5e0da; border-radius: 5px; background: #fff; }
+  [data-testid="stExpander"] summary { font-weight: 650; color: #213b33; }
+  .research-status { display: flex; flex-wrap: wrap; gap: .4rem; margin: .1rem 0 1rem; }
+  .status-chip { display: inline-flex; align-items: center; min-height: 1.55rem;
+                 padding: .13rem .52rem; border-radius: 4px; font-size: .78rem;
+                 font-weight: 650; line-height: 1.2; }
+  .status-chip.complete { color: #345d53; background: #e8f1ec; }
+  .status-chip.approved { color: #176345; background: #dff1e8; }
+  .status-chip.progress { color: #805300; background: #fff0cf; }
+  .status-chip.rejected { color: #a83f31; background: #fde7e1; }
+  .research-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(18rem, 1fr);
+                   gap: 2.2rem; align-items: start; }
+  .research-grid aside { border-left: 1px solid #dce5e0; padding-left: 1.4rem; }
+  .research-grid h4 { font-size: .82rem; color: #547067; font-weight: 700;
+                      margin: 0 0 .35rem; }
+  .research-grid p { color: #213b33; font-size: .94rem; line-height: 1.55;
+                     max-width: 76ch; margin: 0 0 1rem; }
+  .research-grid ul { margin: .2rem 0 0; padding-left: 1.2rem; }
+  .research-grid li { color: #213b33; font-size: .91rem; line-height: 1.5;
+                      margin-bottom: .45rem; max-width: 76ch; }
+  .research-grid a { color: #126d69; font-size: .88rem; font-weight: 650; }
+  .research-grid a:hover { color: #0c4e4a; }
+  .research-muted { color: #657a71 !important; }
   @media (max-width: 700px) {
     .score-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: .75rem; }
     .score-cell:nth-child(2) { border-right: none; }
+    .research-grid { grid-template-columns: 1fr; gap: .5rem; }
+    .research-grid aside { border-left: none; border-top: 1px solid #dce5e0;
+                           padding: 1rem 0 0; }
   }
 </style>
 """,
@@ -102,6 +127,76 @@ def _score_chart(rows: list[dict[str, Any]], metric: str, title: str) -> go.Figu
     return fig
 
 
+def _research_epoch(entry: dict[str, Any]) -> None:
+    epoch = int(entry["epoch"])
+    researcher = entry.get("researcher", {}).get("result", {})
+    verifier = entry.get("verifier", {}).get("result", {})
+    verdict = verifier.get("verdict")
+    in_progress = bool(entry.get("in_progress"))
+    state = (
+        "In progress"
+        if in_progress
+        else (
+            "Approved"
+            if verdict == "approve"
+            else (
+                "Needs revision"
+                if verdict == "reject"
+                else "Research complete" if researcher else "Pending"
+            )
+        )
+    )
+    with st.expander(f"Epoch {epoch:03d} | {state}", expanded=entry.get("is_latest", False)):
+        chips = []
+        if in_progress:
+            chips.append('<span class="status-chip progress">In progress</span>')
+        elif researcher:
+            chips.append('<span class="status-chip complete">Research complete</span>')
+        if verdict == "approve":
+            chips.append('<span class="status-chip approved">Review approved</span>')
+        elif verdict == "reject":
+            chips.append('<span class="status-chip rejected">Review rejected</span>')
+        elif researcher and in_progress:
+            chips.append('<span class="status-chip progress">Review pending</span>')
+
+        def paragraph(value: object) -> str:
+            return f"<p>{escape(str(value))}</p>" if value else ""
+
+        changes = researcher.get("changes_made") or []
+        change_list = "".join(f"<li>{escape(str(change))}</li>" for change in changes)
+        hypothesis = paragraph(researcher.get("hypothesis"))
+        expected = paragraph(researcher.get("expected_outcome"))
+        assessment = paragraph(verifier.get("summary"))
+        issues = verifier.get("issues") or []
+        issue_list = "".join(f"<li>{escape(str(issue))}</li>" for issue in issues)
+        revision = paragraph(verifier.get("revision_instructions")) if verdict == "reject" else ""
+        commit = entry.get("commit")
+        commit_url = entry.get("commit_url")
+        commit_link = (
+            f'<a href="{escape(commit_url, quote=True)}" target="_blank" '
+            f'rel="noopener noreferrer">View changes in GitHub ({escape(commit[:7])}) ↗</a>'
+            if isinstance(commit, str) and isinstance(commit_url, str)
+            else ""
+        )
+        if not researcher:
+            hypothesis = '<p class="research-muted">Research is underway.</p>'
+        st.markdown(
+            '<div class="research-status">' + "".join(chips) + "</div>"
+            '<div class="research-grid"><div>'
+            + ("<h4>Hypothesis</h4>" if researcher else "")
+            + hypothesis
+            + ("<h4>Changes made</h4><ul>" + change_list + "</ul>" if change_list else "")
+            + "</div><aside>"
+            + ("<h4>Expected outcome</h4>" + expected if expected else "")
+            + ("<h4>Verifier assessment</h4>" + assessment if assessment else "")
+            + ("<h4>Issues</h4><ul>" + issue_list + "</ul>" if issue_list else "")
+            + ("<h4>Revision requested</h4>" + revision if revision else "")
+            + commit_link
+            + "</aside></div>",
+            unsafe_allow_html=True,
+        )
+
+
 def _render(data: dict[str, Any]) -> None:
     progress = data["progress"]
     rows = data["metrics"]
@@ -110,7 +205,7 @@ def _render(data: dict[str, Any]) -> None:
     phase = progress.get("phase", "historical run")
     status = progress.get("status", "recorded")
 
-    st.title("Self-improvement monitor")
+    st.title("Agent improvement")
     st.caption(f"{data['run_id']}   ·   {data['metadata'].get('config_id', 'local run')}")
     message = f" · {escape(str(progress['message']))}" if progress.get("message") else ""
     active = next((s for s in splits if s["epoch"] == current_epoch and s["kind"] == phase), None)
@@ -221,28 +316,13 @@ def _render(data: dict[str, Any]) -> None:
             )
         st.dataframe(cost_rows, hide_index=True, width="stretch")
 
-    st.subheader("Research log")
-    if data["timeline"]:
-        for entry in reversed(data["timeline"]):
-            result = entry["result"]
-            summary = result.get("summary") or result.get("hypothesis") or "No summary"
-            state = result.get("verdict", result.get("status", "completed"))
-            st.markdown(
-                f'<div class="timeline-entry"><strong>{entry["epoch"]} · '
-                f"{entry['role'].title()} · {escape(str(state))}</strong><br>"
-                f"{escape(str(summary))}</div>",
-                unsafe_allow_html=True,
-            )
-            if result.get("hypothesis") and result.get("summary"):
-                st.caption(f"Hypothesis: {result['hypothesis']}")
-            for change in result.get("changes_made", []):
-                st.caption(f"Change: {change}")
-            if result.get("expected_outcome"):
-                st.caption(f"Expected: {result['expected_outcome']}")
-            if result.get("issues"):
-                st.caption(f"Issues: {result['issues']}")
+    st.subheader("Research history")
+    research_history = data.get("research_history", [])
+    if research_history:
+        for index, entry in enumerate(research_history):
+            _research_epoch({**entry, "is_latest": index == 0})
     else:
-        st.caption("Researcher and verifier decisions will appear after the first revision.")
+        st.caption("Research decisions will appear after the first epoch.")
 
 
 runs = list_runs(REPO_ROOT)
@@ -268,5 +348,5 @@ def live_view(run_id: str) -> None:
 if selected:
     live_view(selected)
 else:
-    st.title("Self-improvement monitor")
+    st.title("Agent improvement")
     st.info("No self-improvement runs found yet. Start a run to see live progress here.")

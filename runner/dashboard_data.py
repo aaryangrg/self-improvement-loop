@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from .self_improvement import validate_run_id
 
@@ -63,14 +66,17 @@ def load_run(repo_root: Path, run_id: str) -> dict[str, Any]:
                 }
             )
 
+    progress = read_json(root / "metadata" / "progress.json")
+    timeline = _timeline(root)
     return {
         "run_id": run_id,
         "root": root,
         "metadata": read_json(root / "metadata" / "run.json"),
-        "progress": read_json(root / "metadata" / "progress.json"),
+        "progress": progress,
         "metrics": metrics,
         "splits": splits,
-        "timeline": _timeline(root),
+        "timeline": timeline,
+        "research_history": _research_history(repo_root, root, run_id, progress, timeline),
     }
 
 
@@ -142,6 +148,102 @@ def _timeline(root: Path) -> list[dict[str, Any]]:
             }
         )
     return items
+
+
+def _research_history(
+    repo_root: Path,
+    root: Path,
+    run_id: str,
+    progress: dict[str, Any],
+    timeline: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_epoch: dict[int, dict[str, Any]] = {}
+    for item in timeline:
+        try:
+            epoch = int(str(item["epoch"]).removeprefix("epoch-"))
+        except ValueError:
+            continue
+        bucket = by_epoch.setdefault(epoch, {"epoch": epoch})
+        bucket[item["role"]] = item
+
+    current_epoch = progress.get("epoch")
+    if (
+        progress.get("status") == "running"
+        and progress.get("phase") == "research"
+        and isinstance(current_epoch, int)
+        and current_epoch > 0
+    ):
+        by_epoch.setdefault(current_epoch, {"epoch": current_epoch})
+
+    runtime = read_json(root / "metadata" / "runtime.json")
+    pr_url = runtime.get("pr_url")
+    fallback_commits: dict[int, str] | None = None
+    for epoch, bucket in by_epoch.items():
+        candidate = read_json(
+            root / "metadata" / "researcher" / f"epoch-{epoch:03d}" / "candidate.json"
+        )
+        commit = candidate.get("commit")
+        verifier = bucket.get("verifier", {}).get("result", {})
+        scored_epoch = (root / "epochs" / f"epoch-{epoch:03d}" / "run.json").is_file()
+        if not _valid_commit(commit) and verifier.get("verdict") == "approve" and scored_epoch:
+            if fallback_commits is None:
+                fallback_commits = _git_candidate_commits(repo_root, run_id)
+            commit = fallback_commits.get(epoch)
+        bucket["commit"] = commit if _valid_commit(commit) else None
+        bucket["commit_url"] = _commit_url(pr_url, bucket["commit"])
+        bucket["in_progress"] = (
+            progress.get("status") == "running"
+            and progress.get("phase") == "research"
+            and current_epoch == epoch
+        )
+    return [by_epoch[epoch] for epoch in sorted(by_epoch, reverse=True)]
+
+
+def _valid_commit(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) is not None
+
+
+def _git_candidate_commits(repo_root: Path, run_id: str) -> dict[int, str]:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "log",
+                "--all",
+                "--format=%H%x09%s",
+                f"--grep=Self-improvement {run_id} epoch",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    commits: dict[int, str] = {}
+    subject = re.compile(rf"Self-improvement {re.escape(run_id)} epoch (\d{{3}}) candidate \d+")
+    for line in result.stdout.splitlines():
+        sha, _, message = line.partition("\t")
+        match = subject.fullmatch(message)
+        if match and _valid_commit(sha):
+            commits.setdefault(int(match.group(1)), sha)
+    return commits
+
+
+def _commit_url(pr_url: object, commit: object) -> str | None:
+    if not isinstance(pr_url, str) or not _valid_commit(commit):
+        return None
+    parsed = urlsplit(pr_url)
+    if parsed.scheme != "https" or parsed.netloc != "github.com":
+        return None
+    if re.fullmatch(r"/[^/]+/[^/]+/pull/\d+/?", parsed.path) is None:
+        return None
+    repo_path = parsed.path.split("/pull/")[0]
+    return urlunsplit(("https", "github.com", f"{repo_path}/commit/{commit}", "", ""))
 
 
 def _codex_usage(path: Path) -> dict[str, int]:

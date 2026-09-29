@@ -236,6 +236,10 @@ class LoopTest(unittest.TestCase):
             self.assertEqual(version, "version-1")
             self.assertEqual(revise_mock.call_count, 1)
             self.assertEqual(check.call_count, 1)
+            self.assertEqual(
+                json.loads((artifact / "candidate.json").read_text(encoding="utf-8")),
+                {"epoch": 1, "commit": "commit-1", "version_id": "version-1"},
+            )
 
     def test_no_edit_stops_after_code_revision_budget(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
