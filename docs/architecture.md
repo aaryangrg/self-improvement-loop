@@ -384,38 +384,29 @@ Harvey-versus-recipe package and system-tool comparison.
 
 ## Future Scope
 
-The loop works on a smoke split, but larger experiments will change what the
-researcher needs and what we can afford to run:
+Future experiments should address the quality and cost of research feedback:
 
-- **Larger splits will be expensive and noisy.** We should still evaluate every
-  trial, but group failures by deterministic signals before presenting them to
-  the researcher. It can inspect representative failures and then open the
-  underlying traces when a group needs closer investigation.
-- **The researcher sees too many files today.** Give it a concise index and
-  the evidence relevant to the current hypothesis, rather than every
-  conversation, artifact, and score file by default. Keep the full results
-  available for drill-down and audit.
-- **Decide what evaluation feedback it may see.** We could give the researcher
-  results from an evaluation split to help it choose the next experiment. Once
-  those results influence its edits, that split is effectively validation data,
-  not an untouched test set. We would need a separate final held-out set to
-  measure transfer honestly.
-- **Expand both train and evaluation coverage.** The splits need more tasks,
-  with some shared structural failure modes but different documents and
-  answers. Otherwise an edit may fix a train sample without having any
-  plausible path to improving evaluation performance.
-- **Include cost and execution time in the objective.** Feed task-agent cost
-  and latency, including slow runs, back to the researcher. It could then seek
-  improvements that are cheaper or faster, or quality gains that do not come
-  at a disproportionate cost. Track judge and research costs separately.
-- **Let the researcher run small probes.** Today it commits to a recipe change
-  before seeing another result. A bounded tool for running selected train tasks
-  would let it test a hypothesis before a full epoch. Log probe choices and
-  costs so repeated probing does not become hidden sample-level tuning. For
-  cloud runs, changed recipes still need a Git-backed runtime until a working
-  development lane is available.
+- **Summarize failures before handing them to Codex.** As the split grows,
+  cluster failures by recurring failure mode before the researcher begins its
+  analysis. This narrows its search space: it can examine each cluster and
+  representative examples instead of reading every trace and artifact one by
+  one, while still being able to inspect the underlying evidence.
+- **Return held-out scores as a generalization signal.** Show the researcher
+  whether a train-set improvement also changes performance on the evaluation
+  split, so it can recognize directions that are not transferring. If it uses
+  those scores to choose future edits, that split becomes part of the research
+  feedback loop; a separate final test set would still be needed for an
+  untouched measurement.
+- **Analyze and expand the dataset.** First examine the task set to identify
+  failure modes that actually occur in both train and held-out tasks. Then add
+  more samples to each split, with distinct documents and answers but enough
+  overlap in failure modes to test whether a fix transfers. Track task coverage
+  and score variance across trials as the splits grow.
+- **Feed back cost and execution time.** Give the researcher task-agent cost
+  and latency alongside quality scores. It could then pursue cheaper or faster
+  recipes, or seek quality gains without a disproportionate increase in cost or
+  time. Keep judge and research-agent spending visible separately.
 
-Longer term, the researcher could coordinate its own hypotheses, targeted
-probes, and full epochs within explicit cost and time budgets. The orchestrator
-would continue to enforce permissions, validation, and the final held-out
-boundary.
+The longer-term direction is a researcher that coordinates its hypotheses and
+full epochs itself, while the orchestrator continues to enforce recipe
+permissions, validation, and evaluation boundaries.
